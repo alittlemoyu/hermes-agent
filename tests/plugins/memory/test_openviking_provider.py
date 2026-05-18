@@ -1602,9 +1602,11 @@ def test_viking_client_headers_send_tenant_when_default():
     assert headers["Authorization"] == "Bearer test-key"
 
 
-def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
+def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default(monkeypatch):
     # Empty account/user strings fall back to "default" via the constructor.
     # Headers are sent even for the default value — ROOT API keys need them.
+    monkeypatch.delenv("OPENVIKING_ACCOUNT", raising=False)
+    monkeypatch.delenv("OPENVIKING_USER", raising=False)
     client = _VikingClient(
         "https://example.com",
         api_key="",
