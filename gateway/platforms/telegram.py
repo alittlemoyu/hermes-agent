@@ -2788,6 +2788,12 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
+                detail_lines = [text, ""]
+                for idx, choice in enumerate(choices):
+                    detail_lines.append(f"{idx + 1}. {_html.escape(str(choice))}")
+                    detail_lines.append("")
+                text = "\n".join(detail_lines).rstrip()
+                kwargs["text"] = text
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
                 rows = []

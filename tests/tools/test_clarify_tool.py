@@ -122,6 +122,37 @@ class TestClarifyToolChoicesValidation:
         clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
         assert choices_received == ["1", "2", "3"]
 
+    def test_structured_choices_render_title_and_description(self):
+        """Structured choices should degrade to detailed display strings."""
+        choices_received = []
+
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            choices_received.extend(choices or [])
+            return choices[0] if choices else ""
+
+        result = json.loads(clarify_tool(
+            "Pick entity",
+            choices=[
+                {
+                    "id": "task/example",
+                    "title": "示例任务",
+                    "description": "status=in_progress；confidence=90；下一步确认现场结果",
+                },
+                {
+                    "label": "新建条目",
+                    "description": "没有合适旧实体，后续走 create 流程",
+                },
+            ],
+            callback=mock_callback,
+        ))
+
+        assert choices_received == [
+            "示例任务\n  status=in_progress；confidence=90；下一步确认现场结果",
+            "新建条目\n  没有合适旧实体，后续走 create 流程",
+        ]
+        assert result["choices_offered"] == choices_received
+        assert result["user_response"] == choices_received[0]
+
 
 class TestClarifyToolCallbackHandling:
     """Tests for callback error handling."""
@@ -189,6 +220,6 @@ class TestClarifySchema:
         choices_spec = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]
         assert choices_spec.get("maxItems") == MAX_CHOICES
 
-    def test_max_choices_is_four(self):
-        """MAX_CHOICES constant should be 4."""
-        assert MAX_CHOICES == 4
+    def test_max_choices_supports_detailed_entity_confirmation(self):
+        """MAX_CHOICES supports five entity candidates plus refine/create."""
+        assert MAX_CHOICES == 7
