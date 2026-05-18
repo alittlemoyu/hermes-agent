@@ -182,6 +182,20 @@ class TestWeixinChunking:
 
 
 class TestWeixinConfig:
+    def test_weixin_protocol_version_matches_upstream_npm_package(self):
+        assert weixin.CHANNEL_VERSION == "2.4.3"
+        assert weixin.ILINK_APP_CLIENT_VERSION == ((2 << 16) | (4 << 8) | 3)
+
+    def test_base_info_uses_valid_bot_agent_default(self):
+        assert weixin._base_info() == {
+            "channel_version": "2.4.3",
+            "bot_agent": "Hermes/2.4.3",
+        }
+
+    def test_base_info_sanitizes_invalid_bot_agent(self):
+        assert weixin._base_info("Hermes")["bot_agent"] == "Hermes/2.4.3"
+        assert weixin._base_info("Hermes/2.4.3 (env=prod)")["bot_agent"] == "Hermes/2.4.3 (env=prod)"
+
     def test_apply_env_overrides_configures_weixin(self):
         config = GatewayConfig()
 
