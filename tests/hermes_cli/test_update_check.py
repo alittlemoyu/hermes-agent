@@ -27,11 +27,12 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "rev": None, "ver": __version__}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = check_for_updates()
+    with patch("hermes_cli.banner._update_cache_identity", return_value={"rev": None}):
+        with patch("hermes_cli.banner.subprocess.run") as mock_run:
+            result = check_for_updates()
 
     assert result == 3
     mock_run.assert_not_called()
@@ -89,11 +90,50 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
-        result = check_for_updates()
+    with patch("hermes_cli.banner._update_cache_identity", return_value={"rev": None}):
+        with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+            result = check_for_updates()
 
     assert result == 5
     assert mock_run.call_count == 2  # git fetch + git rev-list
+
+
+def test_check_for_updates_invalidates_cache_when_git_head_changes(tmp_path, monkeypatch):
+    """Manual git resets should invalidate the six-hour update cache."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({
+        "ts": time.time(),
+        "behind": 270,
+        "rev": None,
+        "repo_head": "old-head",
+        "origin_head": "origin-head",
+    }))
+
+    identities = [
+        {"rev": None, "repo_head": "new-head", "origin_head": "origin-head"},
+        {"rev": None, "repo_head": "new-head", "origin_head": "origin-head"},
+    ]
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner._update_cache_identity", side_effect=identities):
+        with patch("hermes_cli.banner._check_via_local_git", return_value=4) as mock_check:
+            result = banner.check_for_updates()
+
+    assert result == 4
+    mock_check.assert_called_once_with(repo_dir)
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 4
+    assert cached["repo_head"] == "new-head"
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
