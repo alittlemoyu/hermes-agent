@@ -3746,6 +3746,11 @@ class AIAgent:
         from agent.chat_completion_helpers import build_api_kwargs
         return build_api_kwargs(self, api_messages)
 
+    def _apply_fallback_request_overrides(self, api_kwargs: dict) -> dict:
+        """Forwarder — see ``agent.chat_completion_helpers.apply_fallback_request_overrides``."""
+        from agent.chat_completion_helpers import apply_fallback_request_overrides
+        return apply_fallback_request_overrides(self, api_kwargs)
+
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
 
