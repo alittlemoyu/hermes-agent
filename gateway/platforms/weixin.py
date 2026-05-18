@@ -72,8 +72,10 @@ from utils import atomic_json_write
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
-CHANNEL_VERSION = "2.2.0"
-ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
+CHANNEL_VERSION = "2.4.3"
+ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 3
+DEFAULT_BOT_AGENT = "Hermes/2.4.3"
+BOT_AGENT_MAX_BYTES = 256
 
 EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
@@ -82,6 +84,8 @@ EP_GET_CONFIG = "ilink/bot/getconfig"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
+EP_NOTIFY_START = "ilink/bot/msg/notifystart"
+EP_NOTIFY_STOP = "ilink/bot/msg/notifystop"
 
 LONG_POLL_TIMEOUT_MS = 35_000
 API_TIMEOUT_MS = 15_000
@@ -203,8 +207,69 @@ def _random_wechat_uin() -> str:
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
 
 
-def _base_info() -> Dict[str, Any]:
-    return {"channel_version": CHANNEL_VERSION}
+def _sanitize_bot_agent(raw: Optional[str]) -> str:
+    """Sanitize the iLink bot_agent using the same UA-style shape as upstream."""
+    if not raw or not isinstance(raw, str):
+        return DEFAULT_BOT_AGENT
+    raw_tokens = raw.strip().split()
+    accepted: List[str] = []
+    pending_product: Optional[str] = None
+    product_re = re.compile(r"^[A-Za-z0-9_.-]{1,32}/[A-Za-z0-9_.+-]{1,32}$")
+    comment_re = re.compile(r"^[\x20-\x27\x2A-\x7E]{1,64}$")
+
+    tokens: List[str] = []
+    idx = 0
+    while idx < len(raw_tokens):
+        token = raw_tokens[idx]
+        if token.startswith("(") and not token.endswith(")"):
+            collected = token
+            while idx + 1 < len(raw_tokens) and not collected.endswith(")"):
+                idx += 1
+                collected += " " + raw_tokens[idx]
+            tokens.append(collected)
+        else:
+            tokens.append(token)
+        idx += 1
+
+    for token in tokens:
+        if token.startswith("(") and token.endswith(")"):
+            comment = token[1:-1]
+            if pending_product and comment_re.fullmatch(comment):
+                accepted.append(f"{pending_product} ({comment})")
+                pending_product = None
+            elif pending_product:
+                accepted.append(pending_product)
+                pending_product = None
+            continue
+        if pending_product:
+            accepted.append(pending_product)
+            pending_product = None
+        if product_re.fullmatch(token):
+            pending_product = token
+    if pending_product:
+        accepted.append(pending_product)
+
+    if not accepted:
+        return DEFAULT_BOT_AGENT
+    result: List[str] = []
+    total = 0
+    for token in accepted:
+        added = len(token.encode("utf-8")) + (1 if result else 0)
+        if total + added > BOT_AGENT_MAX_BYTES:
+            break
+        result.append(token)
+        total += added
+    return " ".join(result) if result else DEFAULT_BOT_AGENT
+
+
+def _base_info(bot_agent: Optional[str] = None) -> Dict[str, Any]:
+    """Build base_info payload attached to every API request.
+
+    bot_agent: Client identifier string, similar to HTTP User-Agent.
+      Format: "Product/Version (Comment)", e.g. "Hermes/1.0 (OpenClaw-compatible)".
+      Falls back to "Hermes" when not provided.
+    """
+    return {"channel_version": CHANNEL_VERSION, "bot_agent": _sanitize_bot_agent(bot_agent)}
 
 
 def _headers(token: Optional[str], body: str) -> Dict[str, str]:
@@ -375,8 +440,9 @@ async def _api_post(
     payload: Dict[str, Any],
     token: Optional[str],
     timeout_ms: int,
+    bot_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
-    body = _json_dumps({**payload, "base_info": _base_info()})
+    body = _json_dumps({**payload, "base_info": _base_info(bot_agent)})
     url = f"{base_url.rstrip('/')}/{endpoint}"
     timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
     async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
@@ -384,6 +450,44 @@ async def _api_post(
         if not response.ok:
             raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
         return json.loads(raw)
+
+
+async def _notify_start(
+    session: "aiohttp.ClientSession",
+    *,
+    base_url: str,
+    token: str,
+    bot_agent: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Notify iLink that the channel client is starting."""
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=EP_NOTIFY_START,
+        payload={},
+        token=token,
+        timeout_ms=CONFIG_TIMEOUT_MS,
+        bot_agent=bot_agent,
+    )
+
+
+async def _notify_stop(
+    session: "aiohttp.ClientSession",
+    *,
+    base_url: str,
+    token: str,
+    bot_agent: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Notify iLink that the channel client is stopping."""
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=EP_NOTIFY_STOP,
+        payload={},
+        token=token,
+        timeout_ms=CONFIG_TIMEOUT_MS,
+        bot_agent=bot_agent,
+    )
 
 
 async def _api_get(
@@ -413,6 +517,7 @@ async def _get_updates(
     token: str,
     sync_buf: str,
     timeout_ms: int,
+    bot_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
         return await _api_post(
@@ -422,6 +527,7 @@ async def _get_updates(
             payload={"get_updates_buf": sync_buf},
             token=token,
             timeout_ms=timeout_ms,
+            bot_agent=bot_agent,
         )
     except asyncio.TimeoutError:
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
@@ -436,6 +542,7 @@ async def _send_message(
     text: str,
     context_token: Optional[str],
     client_id: str,
+    bot_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a text message via iLink sendmessage API.
 
@@ -461,6 +568,7 @@ async def _send_message(
         payload={"msg": message},
         token=token,
         timeout_ms=API_TIMEOUT_MS,
+        bot_agent=bot_agent,
     )
 
 
@@ -472,6 +580,7 @@ async def _send_typing(
     to_user_id: str,
     typing_ticket: str,
     status: int,
+    bot_agent: Optional[str] = None,
 ) -> None:
     await _api_post(
         session,
@@ -484,6 +593,7 @@ async def _send_typing(
         },
         token=token,
         timeout_ms=CONFIG_TIMEOUT_MS,
+        bot_agent=bot_agent,
     )
 
 
@@ -494,6 +604,7 @@ async def _get_config(
     token: str,
     user_id: str,
     context_token: Optional[str],
+    bot_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"ilink_user_id": user_id}
     if context_token:
@@ -505,6 +616,7 @@ async def _get_config(
         payload=payload,
         token=token,
         timeout_ms=CONFIG_TIMEOUT_MS,
+        bot_agent=bot_agent,
     )
 
 
@@ -520,6 +632,7 @@ async def _get_upload_url(
     rawfilemd5: str,
     filesize: int,
     aeskey_hex: str,
+    bot_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
     return await _api_post(
         session,
@@ -537,6 +650,7 @@ async def _get_upload_url(
         },
         token=token,
         timeout_ms=API_TIMEOUT_MS,
+        bot_agent=bot_agent,
     )
 
 
@@ -1225,6 +1339,12 @@ class WeixinAdapter(BasePlatformAdapter):
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
             default=False,
         )
+        # bot_agent: Client identifier for iLink API, similar to HTTP User-Agent.
+        # Format: "Product/Version (Comment)", e.g. "Hermes/1.0 (OpenClaw-compatible)".
+        # Falls back to a UA-style Hermes version token when not configured.
+        self._bot_agent = str(
+            extra.get("bot_agent") or os.getenv("WEIXIN_BOT_AGENT", DEFAULT_BOT_AGENT)
+        ).strip()
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1273,6 +1393,23 @@ class WeixinAdapter(BasePlatformAdapter):
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
+        try:
+            notify_response = await _notify_start(
+                self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                bot_agent=self._bot_agent,
+            )
+            ret = notify_response.get("ret")
+            if ret not in {0, None}:
+                logger.warning(
+                    "[%s] notify_start returned ret=%s errmsg=%s",
+                    self.name,
+                    ret,
+                    notify_response.get("errmsg"),
+                )
+        except Exception as exc:
+            logger.warning("[%s] notify_start failed during startup (ignored): %s", self.name, exc)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
@@ -1300,6 +1437,17 @@ class WeixinAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        # Notify iLink that the channel is stopping (best-effort)
+        if self._send_session and not self._send_session.closed and self._token:
+            try:
+                await _notify_stop(
+                    self._send_session,
+                    base_url=self._base_url,
+                    token=self._token,
+                    bot_agent=self._bot_agent,
+                )
+            except Exception as exc:
+                logger.debug("[%s] notify_stop non-fatal: %s", self.name, exc)
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
         self._poll_session = None
@@ -1324,6 +1472,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     token=self._token,
                     sync_buf=sync_buf,
                     timeout_ms=timeout_ms,
+                    bot_agent=self._bot_agent,
                 )
                 suggested_timeout = response.get("longpolling_timeout_ms")
                 if isinstance(suggested_timeout, int) and suggested_timeout > 0:
@@ -1557,6 +1706,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 token=self._token,
                 user_id=user_id,
                 context_token=context_token,
+                bot_agent=self._bot_agent,
             )
             typing_ticket = str(response.get("typing_ticket") or "")
             if typing_ticket:
@@ -1596,6 +1746,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     text=chunk,
                     context_token=context_token,
                     client_id=client_id,
+                    bot_agent=self._bot_agent,
                 )
                 # Check iLink response for session-expired error
                 if resp and isinstance(resp, dict):
@@ -1746,6 +1897,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 to_user_id=chat_id,
                 typing_ticket=typing_ticket,
                 status=TYPING_START,
+                bot_agent=self._bot_agent,
             )
         except Exception as exc:
             logger.debug("[%s] typing start failed for %s: %s", self.name, _safe_id(chat_id), exc)
@@ -1764,6 +1916,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 to_user_id=chat_id,
                 typing_ticket=typing_ticket,
                 status=TYPING_STOP,
+                bot_agent=self._bot_agent,
             )
         except Exception as exc:
             logger.debug("[%s] typing stop failed for %s: %s", self.name, _safe_id(chat_id), exc)
@@ -1918,6 +2071,7 @@ class WeixinAdapter(BasePlatformAdapter):
             rawfilemd5=rawfilemd5,
             filesize=_aes_padded_size(rawsize),
             aeskey_hex=aes_key.hex(),
+            bot_agent=self._bot_agent,
         )
         upload_param = str(upload_response.get("upload_param") or "")
         upload_full_url = str(upload_response.get("upload_full_url") or "")
@@ -1968,6 +2122,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 text=self.format_message(caption),
                 context_token=context_token,
                 client_id=last_message_id,
+                bot_agent=self._bot_agent,
             )
 
         last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
@@ -1988,6 +2143,7 @@ class WeixinAdapter(BasePlatformAdapter):
             },
             token=self._token,
             timeout_ms=API_TIMEOUT_MS,
+            bot_agent=self._bot_agent,
         )
         return last_message_id
 
