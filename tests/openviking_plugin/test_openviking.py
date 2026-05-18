@@ -71,6 +71,31 @@ class TestOpenVikingRead:
             {"uri": "viking://user/hermes/memories/profile.md"},
         )]
 
+    def test_full_read_passes_offset_and_limit(self):
+        provider = OpenVikingMemoryProvider()
+        uri = "viking://resources/docs/api.md"
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/content/read",
+                    (("limit", 80), ("offset", 20), ("uri", uri)),
+                ): {"result": "windowed text"},
+            }
+        )
+
+        result = json.loads(provider._tool_read({
+            "uri": uri,
+            "level": "full",
+            "offset": 20,
+            "limit": 80,
+        }))
+
+        assert result["content"] == "windowed text"
+        assert provider._client.calls == [(
+            "/api/v1/content/read",
+            {"uri": uri, "offset": 20, "limit": 80},
+        )]
+
     def test_overview_file_uri_routes_straight_to_content_read_via_stat_probe(self):
         """Pre-check via fs/stat: file URIs skip the directory-only endpoint entirely."""
         provider = OpenVikingMemoryProvider()
@@ -94,6 +119,7 @@ class TestOpenVikingRead:
         assert result["resolved_uri"] == file_uri
         assert result["level"] == "overview"
         assert result["fallback"] == "content/read"
+        assert result["requested_level"] == "overview"
         assert result["content"] == "full content"
         assert provider._client.calls == [
             ("/api/v1/fs/stat", {"uri": file_uri}),
@@ -172,6 +198,7 @@ class TestOpenVikingRead:
         assert result["uri"] == file_uri
         assert result["level"] == "overview"
         assert result["fallback"] == "content/read"
+        assert result["requested_level"] == "overview"
         assert result["content"] == "fallback full content"
         assert provider._client.calls == [
             ("/api/v1/fs/stat", {"uri": file_uri}),
@@ -230,4 +257,76 @@ class TestOpenVikingBrowse:
         assert provider._client.calls == [(
             "/api/v1/fs/ls",
             {"uri": "viking://user/hermes"},
+        )]
+
+    def test_browse_list_passes_only_list_params(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/fs/ls",
+                    (("recursive", True), ("simple", True), ("uri", "viking://resources"),),
+                ): {"result": []},
+            }
+        )
+
+        json.loads(provider._tool_browse({
+            "action": "list",
+            "path": "viking://resources",
+            "simple": True,
+            "recursive": True,
+            "level_limit": 4,
+        }))
+
+        assert provider._client.calls == [(
+            "/api/v1/fs/ls",
+            {"uri": "viking://resources", "simple": True, "recursive": True},
+        )]
+
+    def test_browse_tree_passes_only_level_limit(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/fs/tree",
+                    (("level_limit", 2), ("uri", "viking://resources"),),
+                ): {"result": []},
+            }
+        )
+
+        json.loads(provider._tool_browse({
+            "action": "tree",
+            "path": "viking://resources",
+            "simple": True,
+            "recursive": True,
+            "level_limit": 2,
+        }))
+
+        assert provider._client.calls == [(
+            "/api/v1/fs/tree",
+            {"uri": "viking://resources", "level_limit": 2},
+        )]
+
+    def test_browse_stat_passes_only_uri(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/fs/stat",
+                    (("uri", "viking://resources/doc.md"),),
+                ): {"result": {"uri": "viking://resources/doc.md"}},
+            }
+        )
+
+        provider._tool_browse({
+            "action": "stat",
+            "path": "viking://resources/doc.md",
+            "simple": True,
+            "recursive": True,
+            "level_limit": 2,
+        })
+
+        assert provider._client.calls == [(
+            "/api/v1/fs/stat",
+            {"uri": "viking://resources/doc.md"},
         )]

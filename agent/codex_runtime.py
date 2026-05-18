@@ -140,6 +140,7 @@ def run_codex_app_server_turn(
                 original_user_message=original_user_message,
                 final_response=turn.final_text,
                 interrupted=False,
+                conversation_history=list(messages),
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)

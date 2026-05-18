@@ -381,6 +381,8 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        memory_agent_context: str = "primary",
+        memory_capture_mode: str = "",
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -451,6 +453,8 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            memory_agent_context=memory_agent_context,
+            memory_capture_mode=memory_capture_mode,
         )
 
     def _get_session_db_for_recall(self):
@@ -2545,6 +2549,8 @@ class AIAgent:
         backend must not block the user from seeing their response.
         """
         if interrupted:
+            return
+        if getattr(self, "_is_background_review_agent", False):
             return
         if not (self._memory_manager and final_response and original_user_message):
             return

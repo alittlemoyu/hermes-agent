@@ -68,6 +68,22 @@ class TestSyncExternalMemoryForTurn:
         )
         agent._memory_manager.sync_all.assert_not_called()
 
+    def test_background_review_turn_does_not_sync_transcript(self):
+        """Self-evolution can write explicit memory artifacts, but its
+        internal review transcript must not be captured as a normal user turn.
+        """
+        agent = _bare_agent()
+        agent._is_background_review_agent = True
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="review memory",
+            final_response="I should store one fact",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_not_called()
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     # --- Normal completed turn still syncs ------------------------------
 
     def test_completed_turn_syncs_and_queues_prefetch(self):
@@ -85,6 +101,7 @@ class TestSyncExternalMemoryForTurn:
         agent._memory_manager.sync_all.assert_called_once_with(
             "What's the weather in Paris?", "It's sunny and 22°C.",
             session_id="test_session_001",
+            messages=None,
         )
         agent._memory_manager.queue_prefetch_all.assert_called_once_with(
             "What's the weather in Paris?",

@@ -1026,6 +1026,193 @@ def check_dangerous_command(command: str, env_type: str,
     return {"approved": True, "message": None}
 
 
+def check_tool_action_approval(action: str, description: str,
+                               *,
+                               pattern_key: str | None = None,
+                               approval_callback=None,
+                               allow_permanent: bool = False,
+                               surface: str = "tool") -> dict:
+    """Request approval for a non-shell tool action.
+
+    This is for tool-side mutations that do not naturally pass through the
+    terminal command guard, such as remote admin API writes. It intentionally
+    reuses the same CLI/gateway approval state and choices as shell approvals,
+    while failing closed when no interactive approval surface is present.
+    """
+    action = action or "tool action"
+    description = description or action
+    pattern_key = pattern_key or f"tool:{action}"
+
+    approval_mode = _get_approval_mode()
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
+    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_gateway = _is_gateway_approval_context()
+    is_ask = os.getenv("HERMES_EXEC_ASK")
+
+    if not is_cli and not is_gateway and not is_ask:
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "description": description,
+            "message": (
+                f"BLOCKED: {description} requires user approval, but no "
+                "interactive approval context is available. No action was taken."
+            ),
+        }
+
+    if is_gateway or is_ask:
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is not None:
+            approval_data = {
+                "command": action,
+                "pattern_key": pattern_key,
+                "pattern_keys": [pattern_key],
+                "description": description,
+            }
+            entry = _ApprovalEntry(approval_data)
+            with _lock:
+                _gateway_queues.setdefault(session_key, []).append(entry)
+
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=action,
+                description=description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                surface=surface,
+            )
+
+            try:
+                notify_cb(approval_data)
+            except Exception as exc:
+                logger.warning("Gateway tool-action approval notify failed: %s", exc)
+                with _lock:
+                    queue = _gateway_queues.get(session_key, [])
+                    if entry in queue:
+                        queue.remove(entry)
+                    if not queue:
+                        _gateway_queues.pop(session_key, None)
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. No action was taken.",
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+
+            try:
+                from tools.environments.base import touch_activity_if_due
+            except Exception:  # pragma: no cover
+                touch_activity_if_due = None
+
+            now = time.monotonic()
+            deadline = now + max(timeout, 0)
+            activity_state = {"last_touch": now, "start": now}
+            resolved = False
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if entry.event.wait(timeout=min(1.0, remaining)):
+                    resolved = True
+                    break
+                if touch_activity_if_due is not None:
+                    try:
+                        touch_activity_if_due(activity_state)
+                    except Exception:
+                        pass
+
+            if not resolved:
+                with _lock:
+                    queue = _gateway_queues.get(session_key, [])
+                    if entry in queue:
+                        queue.remove(entry)
+                    if not queue:
+                        _gateway_queues.pop(session_key, None)
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED: Approval timed out for {description}. No action was taken.",
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+
+            choice = entry.result or "deny"
+            _fire_approval_hook(
+                "post_approval_response",
+                command=action,
+                description=description,
+                pattern_key=pattern_key,
+                pattern_keys=[pattern_key],
+                session_key=session_key,
+                choice=choice,
+                approved=choice in {"once", "session", "always"},
+                surface=surface,
+            )
+
+            if choice == "deny":
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED: User denied {description}. No action was taken.",
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            if choice in {"session", "always"}:
+                approve_session(session_key, pattern_key)
+            if choice == "always" and allow_permanent:
+                approve_permanent(pattern_key)
+                save_permanent_allowlist(_permanent_approved)
+            return {"approved": True, "message": None}
+
+        submit_pending(session_key, {
+            "command": action,
+            "pattern_key": pattern_key,
+            "description": description,
+        })
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "status": "approval_required",
+            "command": action,
+            "description": description,
+            "message": f"Approval required for {description}. No action was taken.",
+        }
+
+    choice = prompt_dangerous_approval(
+        action,
+        description,
+        allow_permanent=allow_permanent,
+        approval_callback=approval_callback,
+    )
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": f"BLOCKED: User denied {description}. No action was taken.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+    if choice in {"session", "always"}:
+        approve_session(session_key, pattern_key)
+    if choice == "always" and allow_permanent:
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+    return {"approved": True, "message": None}
+
+
 # =========================================================================
 # Combined pre-exec guard (tirith + dangerous command detection)
 # =========================================================================
