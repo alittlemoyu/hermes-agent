@@ -202,6 +202,8 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    memory_agent_context: str = "primary",
+    memory_capture_mode: str = "",
 ):
     """
     Initialize the AI Agent.
@@ -1007,6 +1009,9 @@ def init_agent(
     agent._session_messages: List[Dict[str, Any]] = []
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
+    agent._memory_agent_context = memory_agent_context or "primary"
+    agent._memory_capture_mode = memory_capture_mode or ""
+    agent._is_background_review_agent = agent._memory_agent_context == "background_review"
     
     # Cached system prompt -- built once per session, only rebuilt on compression
     agent._cached_system_prompt: Optional[str] = None
@@ -1098,8 +1103,12 @@ def init_agent(
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
                         "hermes_home": str(get_hermes_home()),
-                        "agent_context": "primary",
+                        "agent_context": agent._memory_agent_context,
                     }
+                    if agent._memory_capture_mode:
+                        _init_kwargs["capture_mode"] = agent._memory_capture_mode
+                    if agent._parent_session_id:
+                        _init_kwargs["parent_session_id"] = agent._parent_session_id
                     # Thread session title for memory provider scoping
                     # (e.g. honcho uses this to derive chat-scoped session keys)
                     if agent._session_db:

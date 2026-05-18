@@ -9,8 +9,9 @@ touched.
 
 The fork inherits the parent's live runtime (provider, model, base_url,
 credentials, cached system prompt) so it hits the same prefix cache and
-uses the same auth.  It runs with a tool whitelist limited to memory and
-skill management tools; everything else is denied at runtime.
+uses the same auth.  It runs with a tool whitelist limited to memory,
+skill management, and selected OpenViking artifact tools; everything else
+is denied at runtime.
 
 See the ``hermes-agent-dev`` skill (``references/self-improvement-loop.md``)
 for invariants and PR review criteria.
@@ -381,21 +382,10 @@ def _run_review_in_thread(
             # owns the loop and the agent-loop tools dispatch.
             if _parent_api_mode == "codex_app_server":
                 _parent_api_mode = "codex_responses"
-            # skip_memory=True keeps the review fork from
-            # touching external memory plugins (honcho, mem0,
-            # supermemory, etc.).  Without it, the fork's
-            # __init__ rebuilds its own _memory_manager from
-            # config, scoped to the parent's session_id, and
-            # run_conversation() then leaks the harness prompt
-            # into the user's real memory namespace via three
-            # ingestion sites: on_turn_start (cadence + turn
-            # message), prefetch_all (recall query), and
-            # sync_all (harness prompt + review output recorded
-            # as a (user, assistant) turn pair).  Built-in
-            # MEMORY.md / USER.md state is re-bound from the
-            # parent below so memory(action="add") writes from
-            # the review still land on disk; the review just
-            # has zero side effects on external providers.
+            # Background reviews run with external memory in artifact-only
+            # mode: their harness prompt and review transcript are not
+            # captured as normal turns, but explicit memory/skill artifacts
+            # can still use the configured provider tools.
             # Match parent's toolset config so ``tools[]`` is byte-identical
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
@@ -409,10 +399,12 @@ def _run_review_in_thread(
                 base_url=_parent_runtime.get("base_url") or None,
                 api_key=_parent_runtime.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
+                session_id=agent.session_id,
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                skip_memory=True,
+                memory_agent_context="background_review",
+                memory_capture_mode="artifact_only",
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
@@ -463,11 +455,22 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            review_whitelist.update({
+                "viking_archive",
+                "viking_search",
+                "viking_read",
+                "viking_browse",
+                "viking_remember",
+                "viking_write",
+                "viking_add_skill",
+                "viking_sync_skills",
+                "viking_system",
+            })
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/OpenViking artifact tools are allowed."
                 ),
             )
             try:

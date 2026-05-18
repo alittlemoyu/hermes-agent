@@ -368,11 +368,27 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_all(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Sync a completed turn to all providers."""
         for provider in self._providers:
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                signature = inspect.signature(provider.sync_turn)
+                if "messages" in signature.parameters:
+                    provider.sync_turn(
+                        user_content,
+                        assistant_content,
+                        session_id=session_id,
+                        messages=messages,
+                    )
+                else:
+                    provider.sync_turn(user_content, assistant_content, session_id=session_id)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",

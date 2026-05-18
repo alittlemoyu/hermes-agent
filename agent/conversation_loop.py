@@ -4262,6 +4262,7 @@ def run_conversation(
         original_user_message=original_user_message,
         final_response=final_response,
         interrupted=interrupted,
+        conversation_history=list(messages),
     )
 
     # Background memory/skill review — runs AFTER the response is delivered
