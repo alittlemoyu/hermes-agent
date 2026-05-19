@@ -8950,7 +8950,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         print("✓ Already up to date.")
     else:
         commits_word = "commit" if behind == 1 else "commits"
-        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
+        try:
+            from hermes_cli.banner import format_update_scope_breakdown
+            scope_suffix = format_update_scope_breakdown(PROJECT_ROOT, behind, compare_branch)
+        except Exception:
+            scope_suffix = ""
+        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}{scope_suffix}.")
         from hermes_cli.config import recommended_update_command
 
         print(f"  Run '{recommended_update_command()}' to install.")

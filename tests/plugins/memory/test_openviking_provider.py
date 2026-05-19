@@ -1,13 +1,87 @@
+import inspect
 import json
 import logging
 import zipfile
+from importlib import reload
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 import pytest
 
 import plugins.memory.openviking as openviking_module
+import plugins.memory.openviking.tool_policy as openviking_tool_policy
 from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
+
+
+def test_openviking_package_is_export_layer():
+    init_path = Path(openviking_module.__file__)
+    init_source = init_path.read_text()
+
+    assert len(init_source.splitlines()) < 40
+    assert "OpenVikingMemoryProvider" in openviking_module.__all__
+    assert OpenVikingMemoryProvider.__module__ == "plugins.memory.openviking.provider"
+    assert _VikingClient.__module__ == "plugins.memory.openviking.client"
+
+
+def test_openviking_provider_keeps_lifecycle_and_tools_split():
+    assert inspect.getmodule(OpenVikingMemoryProvider.sync_turn).__name__ == "plugins.memory.openviking.lifecycle"
+    assert inspect.getmodule(OpenVikingMemoryProvider.handle_tool_call).__name__ == "plugins.memory.openviking.tools"
+    assert inspect.getmodule(OpenVikingMemoryProvider.initialize).__name__ == "plugins.memory.openviking.provider"
+
+
+def _schema_by_name(name: str) -> dict:
+    provider = OpenVikingMemoryProvider()
+    schemas = {schema["name"]: schema for schema in provider.get_tool_schemas()}
+    return schemas[name]
+
+
+def _schema_names() -> set[str]:
+    provider = OpenVikingMemoryProvider()
+    return {schema["name"] for schema in provider.get_tool_schemas()}
+
+
+def test_tool_schema_documents_retrieval_vs_path_matching_boundary():
+    search_desc = _schema_by_name("viking_search")["description"]
+    glob_desc = _schema_by_name("viking_glob")["description"]
+
+    assert "Canonical semantic retrieval" in search_desc
+    assert "find() for simple low-latency semantic recall" in search_desc
+    assert "not filename/path matching" in search_desc
+    assert "Canonical AGFS filename/path matching" in glob_desc
+
+
+def test_viking_find_is_hidden_compat_tool_by_default(monkeypatch):
+    monkeypatch.delenv("OPENVIKING_EXPOSE_COMPAT_TOOLS", raising=False)
+    reload(openviking_tool_policy)
+
+    names = _schema_names()
+
+    assert "viking_glob" in names
+    assert "viking_find" not in names
+
+
+def test_viking_find_can_be_exposed_for_legacy_compat(monkeypatch):
+    monkeypatch.setenv("OPENVIKING_EXPOSE_COMPAT_TOOLS", "true")
+    reload(openviking_tool_policy)
+
+    find_desc = _schema_by_name("viking_find")["description"]
+
+    assert "prefer viking_glob" in find_desc
+    assert "not semantic retrieval" in find_desc
+
+    monkeypatch.delenv("OPENVIKING_EXPOSE_COMPAT_TOOLS", raising=False)
+    reload(openviking_tool_policy)
+
+
+def test_tool_schema_documents_factmemory_write_boundary():
+    remember_desc = _schema_by_name("viking_remember")["description"]
+    write_desc = _schema_by_name("viking_write")["description"]
+
+    assert "not the durable write path for fact-memory" in remember_desc
+    assert "not the official fact-memory entity write path" in write_desc
+    assert "content_path" in remember_desc
+    assert "content_path" in write_desc
 
 
 def test_tool_search_sorts_by_raw_score_across_buckets():
