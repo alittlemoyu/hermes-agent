@@ -128,6 +128,11 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OPENVIKING_UPDATE_PATH_MARKERS = (
+    "plugins/memory/openviking",
+    "tests/plugins/memory/test_openviking",
+    "tests/openviking_plugin",
+)
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -173,6 +178,75 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass
     return None
+
+
+def count_update_commits_by_scope(
+    repo_dir: Path,
+    compare_branch: str = "origin/main",
+) -> Optional[Dict[str, int]]:
+    """Split behind commits into OpenViking-touching and other commits.
+
+    This is display-only. The update decision still uses the normal total
+    behind count; this helper gives Moyu a quick signal for whether the current
+    upstream delta affects the OpenViking provider area.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", f"HEAD..{compare_branch}"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode != 0:
+            return None
+        commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        return None
+
+    openviking = 0
+    other = 0
+    for commit in commits:
+        try:
+            changed = subprocess.run(
+                ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(repo_dir),
+            )
+            if changed.returncode != 0:
+                other += 1
+                continue
+            paths = [line.strip().lower() for line in changed.stdout.splitlines() if line.strip()]
+            if any(
+                any(marker in path for marker in _OPENVIKING_UPDATE_PATH_MARKERS)
+                or "openviking" in path
+                for path in paths
+            ):
+                openviking += 1
+            else:
+                other += 1
+        except Exception:
+            other += 1
+
+    return {"total": len(commits), "openviking": openviking, "other": other}
+
+
+def format_update_scope_breakdown(
+    repo_dir: Optional[Path],
+    behind: int,
+    compare_branch: str = "origin/main",
+) -> str:
+    """Return a short display suffix like ``" (2 OpenViking, 5 other)"``."""
+    if repo_dir is None or behind <= 0:
+        return ""
+    breakdown = count_update_commits_by_scope(repo_dir, compare_branch=compare_branch)
+    if not breakdown or breakdown.get("total") != behind:
+        return ""
+    openviking = int(breakdown.get("openviking") or 0)
+    other = int(breakdown.get("other") or 0)
+    if openviking == 0:
+        return f" ({other} other)"
+    if other == 0:
+        return f" ({openviking} OpenViking)"
+    return f" ({openviking} OpenViking, {other} other)"
 
 
 def _git_rev(repo_dir: Path, rev: str) -> Optional[str]:
@@ -703,8 +777,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
             from hermes_cli.config import get_managed_update_command, recommended_update_command
             if behind > 0:
                 commits_word = "commit" if behind == 1 else "commits"
+                scope_suffix = format_update_scope_breakdown(
+                    _resolve_repo_dir(),
+                    behind,
+                )
                 right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                    f"[bold yellow]⚠ {behind} {commits_word} behind{scope_suffix}[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
             else:

@@ -116,6 +116,34 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     mock_run.assert_not_called()
 
 
+def test_update_scope_breakdown_counts_openviking_commits(tmp_path):
+    """Display helper separates OpenViking-touching commits from other updates."""
+    from hermes_cli.banner import count_update_commits_by_scope, format_update_scope_breakdown
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "rev-list"]:
+            return MagicMock(returncode=0, stdout="a\nb\nc\n")
+        if cmd[:2] == ["git", "diff-tree"]:
+            commit = cmd[-1]
+            paths = {
+                "a": "plugins/memory/openviking/__init__.py\n",
+                "b": "README.md\n",
+                "c": "tests/openviking_plugin/test_openviking.py\n",
+            }
+            return MagicMock(returncode=0, stdout=paths[commit])
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        breakdown = count_update_commits_by_scope(repo_dir)
+        suffix = format_update_scope_breakdown(repo_dir, 3)
+
+    assert breakdown == {"total": 3, "openviking": 2, "other": 1}
+    assert suffix == " (2 OpenViking, 1 other)"
+
+
 def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     """Dev install: falls back to Path(__file__).parent.parent when HERMES_HOME has no git repo."""
     import hermes_cli.banner as banner

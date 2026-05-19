@@ -2,6 +2,32 @@
 
 Context database by Volcengine (ByteDance) with filesystem-style knowledge hierarchy, tiered retrieval, and automatic memory extraction.
 
+## Design Authority
+
+This provider follows OpenViking's official concepts first, then adapts them to
+Hermes runtime conventions, then layers Moyu's local fact-memory workflow on top.
+Hermes upstream OpenViking changes are treated as compatibility guidance rather
+than the sole source of architecture. See `DESIGN.md` and `MERGE_POLICY.md`
+before changing public tool shape or merging upstream OpenViking provider code.
+
+## Local Module Boundary
+
+This provider is maintained as a local subsystem rather than a single upstream
+compatibility file:
+
+| Module | Responsibility |
+|--------|----------------|
+| `provider.py` | Hermes `MemoryProvider` adapter, config, initialization, shutdown |
+| `client.py` | OpenViking REST client, identity headers, upload/delete/error handling |
+| `lifecycle.py` | recall, message-parts capture, `used`, commit, archive lifecycle |
+| `tools.py` | tool routing and tool handler behavior |
+| `schemas.py` | tool schema definitions |
+| `tool_policy.py` | public vs compatibility tool exposure |
+| `utils.py` | shared URI/path/env helpers |
+| `__init__.py` | package export compatibility only |
+
+Do not put new implementation blocks in `__init__.py`.
+
 ## Requirements
 
 - `pip install openviking`
@@ -50,25 +76,33 @@ plugin does not invent tenant prefixes in `viking://` URIs.
 
 | Tool | Description |
 |------|-------------|
-| `viking_search` | Search with compatible `find` mode or session-aware `search` mode |
+| `viking_search` | Canonical semantic retrieval entry point: OpenViking `find` for simple recall, `search` for session-aware intent/rerank |
 | `viking_read` | Read content at a viking:// URI (abstract/overview/full, with offset/limit for full reads) |
 | `viking_browse` | Read-only filesystem navigation (list/tree/stat) |
-| `viking_fs` | Explicit filesystem maintenance through OpenViking APIs (mkdir/mv/rm) |
-| `viking_remember` | Store a fact for extraction on session commit; use `content_path` for larger notes |
-| `viking_write` | Create or update content through `/api/v1/content/write`; use `content_path` for large text |
+| `viking_fs` | Maintenance-layer filesystem mutations through OpenViking APIs (mkdir/mv/rm) |
+| `viking_remember` | Explicit OpenViking memory/extraction hint; not the durable fact-memory entity write path |
+| `viking_write` | Exact AGFS content write through `/api/v1/content/write`; use `content_path` for large text |
 | `viking_link` | Link related OpenViking URIs |
 | `viking_relations` | Inspect relations for a URI |
-| `viking_find` | Find files by name pattern |
 | `viking_grep` | Search file content with regex patterns |
-| `viking_glob` | Match files with glob patterns |
+| `viking_glob` | Canonical filename/path glob matching |
 | `viking_add_resource` | Ingest URLs, git sources, local files, or directories |
 | `viking_archive` | Search or expand OpenViking session archives |
 | `viking_add_skill` | Add a structured skill, MCP tool dict, raw `SKILL.md`, local `SKILL.md`, or skill directory |
 | `viking_sync_skills` | Sync Hermes `SKILL.md` files into the configured OpenViking agent scope |
-| `viking_system` | Health, readiness, status, wait, observer, and capped/filterable Prometheus metrics |
-| `viking_admin` | Multi-tenant Admin API reads and approved writes |
-| `viking_consistency` | Check filesystem/vector-index consistency |
-| `viking_reindex` | Rebuild vectors or semantic products for a subtree |
+| `viking_system` | Maintenance-layer health, readiness, status, wait, observer, and capped/filterable Prometheus metrics |
+| `viking_admin` | Maintenance-layer multi-tenant Admin API reads and approved writes |
+| `viking_consistency` | Maintenance-layer filesystem/vector-index consistency check |
+| `viking_reindex` | Maintenance-layer vector or semantic rebuild for a subtree |
+
+Tool ownership rule: one public tool should own each capability. `viking_search`
+owns semantic retrieval; `viking_glob` owns path/glob matching; `viking_grep`
+owns regex content search. Do not add another first-class tool for these
+capabilities without updating `DESIGN.md`.
+
+`viking_find` is retained as a compatibility handler for older calls, but it is
+not exposed in the default tool schema. Set
+`OPENVIKING_EXPOSE_COMPAT_TOOLS=true` only when a legacy workflow needs it.
 
 Direct HTTP resource ingestion follows the OpenViking API contract: remote URLs
 are sent as `path`, while local files and directories are uploaded first through
@@ -85,6 +119,10 @@ JSON tool-call argument. Temporary transfer files are caller-owned by default;
 set `delete_content_path_after_write=true` on `viking_write` to delete the file
 only after OpenViking accepts the write. For `viking_add_skill`, prefer `path`
 over inline `data` when syncing full `SKILL.md` bodies or skill directories.
+
+`viking_write` is for exact AGFS writes. `viking_remember` is for explicit
+OpenViking memory/extraction hints. Neither is the official write path for
+fact-memory structured entities.
 
 Skill ingestion follows the same direct-HTTP shape as OpenViking's Skills API:
 inline `data` is posted to `/api/v1/skills` unchanged, while local `SKILL.md`
