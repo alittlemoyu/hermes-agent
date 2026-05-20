@@ -425,6 +425,23 @@ class TestWeixinChunkDelivery:
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
 
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_tokenless_mode_does_not_attach_context_token(self, send_message_mock):
+        adapter = self._connected_adapter()
+
+        result = asyncio.run(
+            adapter.send(
+                "wxid_test123",
+                "maintenance reminder",
+                metadata={"context_token_mode": "tokenless"},
+            )
+        )
+
+        assert result.success is True
+        assert result.raw_response["context_token_mode"] == "tokenless"
+        assert result.raw_response["context_token_used"] is False
+        assert send_message_mock.await_args.kwargs["context_token"] is None
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):

@@ -1825,7 +1825,10 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
-        context_token = self._token_store.get(self._account_id, chat_id)
+        metadata = metadata or {}
+        context_token_mode = str(metadata.get("context_token_mode") or "auto").strip().lower()
+        use_context_token = context_token_mode not in {"none", "off", "disabled", "tokenless"}
+        context_token = self._token_store.get(self._account_id, chat_id) if use_context_token else None
         last_message_id: Optional[str] = None
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
@@ -1878,7 +1881,14 @@ class WeixinAdapter(BasePlatformAdapter):
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
-            return SendResult(success=True, message_id=last_message_id)
+            return SendResult(
+                success=True,
+                message_id=last_message_id,
+                raw_response={
+                    "context_token_mode": context_token_mode,
+                    "context_token_used": bool(context_token),
+                },
+            )
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
@@ -2250,7 +2260,13 @@ async def send_weixin_direct(
 
     token_store = ContextTokenStore(str(get_hermes_home()))
     token_store.restore(account_id)
-    context_token = token_store.get(account_id, chat_id)
+    context_token_mode = str(
+        extra.get("context_token_mode")
+        or os.getenv("WEIXIN_CONTEXT_TOKEN_MODE", "auto")
+    ).strip().lower()
+    use_context_token = context_token_mode not in {"none", "off", "disabled", "tokenless"}
+    context_token = token_store.get(account_id, chat_id) if use_context_token else None
+    send_metadata = {"context_token_mode": context_token_mode}
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
@@ -2260,7 +2276,7 @@ async def send_weixin_direct(
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:
-            last_result = await live_adapter.send(chat_id, cleaned)
+            last_result = await live_adapter.send(chat_id, cleaned, metadata=send_metadata)
             if not last_result.success:
                 return {"error": f"Weixin send failed: {last_result.error}"}
 
@@ -2279,6 +2295,7 @@ async def send_weixin_direct(
             "chat_id": chat_id,
             "message_id": last_result.message_id if last_result else None,
             "context_token_used": bool(context_token),
+            "context_token_mode": context_token_mode,
         }
 
     async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
@@ -2305,7 +2322,7 @@ async def send_weixin_direct(
         last_result: Optional[SendResult] = None
         cleaned = adapter.format_message(message)
         if cleaned:
-            last_result = await adapter.send(chat_id, cleaned)
+            last_result = await adapter.send(chat_id, cleaned, metadata=send_metadata)
             if not last_result.success:
                 return {"error": f"Weixin send failed: {last_result.error}"}
 
@@ -2324,4 +2341,5 @@ async def send_weixin_direct(
             "chat_id": chat_id,
             "message_id": last_result.message_id if last_result else None,
             "context_token_used": bool(context_token),
+            "context_token_mode": context_token_mode,
         }
