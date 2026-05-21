@@ -34,9 +34,10 @@ def test_factmemory_plan_confirmation_options_trigger_clarify():
     result = maybe_bridge_factmemory_clarify("factmemory_project", json.dumps(payload), callback)
     bridged = json.loads(result)
 
+    assert "这个计划项要归到哪条记忆？" in seen["question"]
     assert "门板防撞钉工艺筹备" in seen["question"]
-    assert seen["choices"][0] == "门板防撞钉任务 | task/door-bumper\n  关联到已有任务。"
-    assert seen["choices"][1] == "新建条目 | create_new_entity\n  确认这是新计划项。"
+    assert seen["choices"][0] == "门板防撞钉任务\n  已有记录：task/door-bumper；关联到已有任务。"
+    assert seen["choices"][1] == "作为新事项记录\n  不关联旧记录，后续按新事项写入"
     assert bridged["clarify_bridge"]["asked"] is True
     assert bridged["clarify_bridge"]["raw_choices"][1]["id"] == "create_new_entity"
     assert bridged["clarify_bridge"]["user_response"] == "create_new_entity"
@@ -69,11 +70,15 @@ def test_factmemory_plan_item_choices_take_priority_over_omission_questions():
     bridged = json.loads(result)
 
     question, choices = seen["request"]
-    assert question == "factmemory 需要确认计划项「门板防撞钉后续跟进测试场景」如何处理："
+    assert question == (
+        "这个计划项要归到哪条记忆？\n"
+        "计划项：门板防撞钉后续跟进测试场景\n"
+        "请选择最合适的一项；如果都不合适，可以选“补充说明”或“作为新事项记录”。"
+    )
     assert "arc_bend_quality" not in question
     assert choices == [
-        "门板防撞钉工艺打孔位置分歧 | problem/door_bumper_pin_process",
-        "新建条目 | create_new_entity",
+        "门板防撞钉工艺打孔位置分歧\n  已有记录：problem/door_bumper_pin_process",
+        "作为新事项记录",
     ]
     assert bridged["clarify_bridge"]["raw_choices"][0]["id"] == "problem/door_bumper_pin_process"
 
