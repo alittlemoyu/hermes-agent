@@ -3875,6 +3875,18 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Stop typing before any post-delivery callback work.  Some
+            # callbacks can release background-review messages or run cleanup
+            # after the main reply has already been sent; those should not keep
+            # persistent platform indicators (Weixin/Slack/etc.) showing that
+            # the foreground agent is still working.
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
+
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -3905,15 +3917,6 @@ class BasePlatformAdapter(ABC):
                         await _post_result
                 except Exception:
                     pass
-            # Stop typing indicator
-            await _stop_typing_task()
-            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
-            # that may have been recreated by _keep_typing after the last stop_typing()
-            try:
-                if hasattr(self, "stop_typing"):
-                    await self.stop_typing(event.source.chat_id)
-            except Exception:
-                pass
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             await self._flush_text_debounce_now(session_key)

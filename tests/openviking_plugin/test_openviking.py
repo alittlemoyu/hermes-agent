@@ -17,6 +17,88 @@ class FakeVikingClient:
             raise response
         return response
 
+    def post(self, path, payload=None, **kwargs):
+        self.calls.append((path, payload or {}))
+        key = (path, tuple(sorted((payload or {}).items())))
+        response = self.responses[key]
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class TestOpenVikingSearchPacket:
+    def test_search_returns_governed_packet_and_legacy_results(self):
+        provider = OpenVikingMemoryProvider()
+        provider._session_id = "session-1"
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/search/find",
+                    (("query", "arc panel"),),
+                ): {
+                    "result": {
+                        "total": 3,
+                        "memories": [
+                            {
+                                "uri": "viking://user/default/memories/entities/task/arc_panel.md",
+                                "score": 0.92,
+                                "abstract": "Mirrored task",
+                                "context_type": "memory",
+                            },
+                            {
+                                "uri": "viking://user/default/memories/events/2026-05-20/event.md",
+                                "score": 0.51,
+                                "abstract": "Related conversation",
+                                "context_type": "memory",
+                            },
+                        ],
+                        "resources": [
+                            {
+                                "uri": "viking://resources/docs/openviking.md",
+                                "score": 0.8,
+                                "abstract": "Official docs",
+                                "context_type": "resource",
+                            },
+                        ],
+                    },
+                },
+            }
+        )
+
+        result = json.loads(provider._tool_search({"query": "arc panel"}))
+
+        assert len(result["results"]) == 3
+        packet = result["packet"]
+        assert packet["version"] == "openviking_retrieval_packet.v1"
+        assert set(packet["sections"]) == {
+            "authoritative_candidates",
+            "recall_only",
+            "factmemory_mirrors",
+            "governance",
+        }
+        mirror = packet["sections"]["factmemory_mirrors"][0]
+        assert mirror["authority"] == "factmemory_mirror_not_source_of_truth"
+        assert mirror["write_policy"] == "confirm_with_factmemory_then_log_stage_commit"
+        assert packet["sections"]["authoritative_candidates"][0]["authority"] == "openviking_authoritative_candidate"
+        assert packet["sections"]["recall_only"][0]["authority"] == "openviking_recall_signal"
+        assert all("source_policy" in item for items in packet["sections"].values() for item in items)
+
+    def test_search_packet_can_be_disabled(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/search/find",
+                    (("query", "probe"),),
+                ): {"result": {"memories": [], "total": 0}},
+            }
+        )
+
+        result = json.loads(provider._tool_search({"query": "probe", "packet": False}))
+
+        assert "results" in result
+        assert "packet" not in result
+
 
 class TestOpenVikingSummaryUriNormalization:
     def test_normalize_summary_uri_maps_pseudo_files_to_parent_directory(self):

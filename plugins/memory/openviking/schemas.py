@@ -69,6 +69,10 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Limit results to specific layers: '0' (abstract), '1' (overview), '2' (full), or '0,1,2' (default: all).",
             },
+            "packet": {
+                "type": "boolean",
+                "description": "Return an explainable retrieval governance packet in addition to legacy results. Default true.",
+            },
         },
         "required": ["query"],
     },

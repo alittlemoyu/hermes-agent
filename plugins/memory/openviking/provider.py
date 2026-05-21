@@ -219,6 +219,11 @@ class OpenVikingMemoryProvider(OpenVikingLifecycleMixin, OpenVikingToolMixin, Me
             else:
                 logger.warning("OpenViking session creation failed: %s", e)
 
+        try:
+            self._drain_session_sync_queue(self._client)
+        except Exception as e:
+            logger.warning("OpenViking session sync queue drain failed during initialize: %s", e)
+
         # Register as the last active provider for atexit safety net
         global _last_active_provider
         _last_active_provider = self

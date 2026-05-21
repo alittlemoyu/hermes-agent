@@ -185,6 +185,39 @@ async def test_finally_cleanup_drains_late_arrival_pending():
 
 
 @pytest.mark.asyncio
+async def test_typing_stops_before_post_delivery_callback():
+    """Post-delivery work can outlive the visible reply; typing must be
+    cleared before that callback runs so persistent platforms don't show the
+    foreground agent as still working."""
+    adapter = _make_adapter()
+    sk = _sk()
+    order = []
+
+    async def handler(event):
+        adapter.register_post_delivery_callback(sk, lambda: order.append("post_callback"))
+        return "ok"
+
+    async def stop_typing(chat_id):
+        order.append("stop_typing")
+
+    adapter._message_handler = handler
+    adapter.stop_typing = stop_typing
+
+    await adapter.handle_message(_make_event(text="M1"))
+
+    for _ in range(50):
+        if "post_callback" in order:
+            break
+        await asyncio.sleep(0.01)
+
+    await adapter.cancel_background_tasks()
+
+    assert "post_callback" in order
+    assert "stop_typing" in order
+    assert order.index("stop_typing") < order.index("post_callback")
+
+
+@pytest.mark.asyncio
 async def test_no_pending_cleans_up_normally():
     """Regression guard: when no pending message exists, the finally
     block must still delete _active_sessions as before (no leak)."""

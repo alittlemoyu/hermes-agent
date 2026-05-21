@@ -7,7 +7,12 @@ import logging
 import re
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from hermes_constants import get_hermes_home
 
 from .client import _VikingClient
 from .utils import (
@@ -21,6 +26,8 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+_SESSION_SYNC_QUEUE_DIRNAME = "openviking-session-sync-queue"
+_SESSION_SYNC_DRAIN_LIMIT = 100
 
 
 def _client_class():
@@ -627,6 +634,7 @@ class OpenVikingLifecycleMixin:
                 {"role": "user", "parts": user_parts},
                 {"role": "assistant", "parts": asst_parts},
             ]
+        queue_path = self._enqueue_session_sync(sid, payloads)
 
         def _sync():
             try:
@@ -634,28 +642,12 @@ class OpenVikingLifecycleMixin:
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                sid_part = _url_path_part(sid)
-                posted = 0
-                for payload in payloads:
-                    client.post(f"/api/v1/sessions/{sid_part}/messages", payload)
-                    posted += 1
-                context_uris = [
-                    part["uri"]
-                    for payload in payloads
-                    for part in payload.get("parts", [])
-                    if isinstance(part, dict) and part.get("type") == "context" and part.get("uri")
-                ]
-                if context_uris:
-                    client.post(
-                        f"/api/v1/sessions/{sid_part}/used",
-                        {"contexts": list(dict.fromkeys(context_uris))},
-                    )
-                self._commit_if_threshold_reached(client, sid)
+                posted = self._drain_session_sync_queue(client, limit=_SESSION_SYNC_DRAIN_LIMIT)
                 logger.debug(
-                    "OpenViking sync_turn: session=%s messages=%s contexts=%d",
+                    "OpenViking sync_turn: session=%s drained_messages=%s queued=%s",
                     sid,
                     posted,
-                    len(context_uris),
+                    queue_path.name,
                 )
             except Exception as e:
                 with self._capture_lock:
@@ -670,6 +662,89 @@ class OpenVikingLifecycleMixin:
             target=_sync, daemon=True, name="openviking-sync"
         )
         self._sync_thread.start()
+
+    def _session_sync_queue_dir(self) -> Path:
+        return get_hermes_home() / _SESSION_SYNC_QUEUE_DIRNAME
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def _enqueue_session_sync(self, session_id: str, payloads: List[Dict[str, Any]]) -> Path:
+        queue_dir = self._session_sync_queue_dir()
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        now = self._utc_now_iso()
+        name = f"{int(time.time() * 1000)}-{uuid.uuid4().hex}.json"
+        path = queue_dir / name
+        record = {
+            "version": "openviking_session_sync_queue.v1",
+            "session_id": session_id,
+            "payloads": payloads,
+            "attempts": 0,
+            "created_at": now,
+            "updated_at": now,
+            "last_error": "",
+        }
+        tmp_path = path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        tmp_path.replace(path)
+        return path
+
+    def _load_session_sync_record(self, path: Path) -> Dict[str, Any]:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _mark_session_sync_failed(self, path: Path, record: Dict[str, Any], error: Exception) -> None:
+        record["attempts"] = int(record.get("attempts") or 0) + 1
+        record["updated_at"] = self._utc_now_iso()
+        record["last_error"] = str(error)
+        tmp_path = path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        tmp_path.replace(path)
+
+    def _send_session_sync_record(self, client: _VikingClient, record: Dict[str, Any]) -> int:
+        session_id = str(record.get("session_id") or self._session_id)
+        sid_part = _url_path_part(session_id)
+        payloads = [payload for payload in record.get("payloads") or [] if isinstance(payload, dict)]
+        posted = 0
+        for payload in payloads:
+            client.post(f"/api/v1/sessions/{sid_part}/messages", payload)
+            posted += 1
+        context_uris = [
+            part["uri"]
+            for payload in payloads
+            for part in payload.get("parts", [])
+            if isinstance(part, dict) and part.get("type") == "context" and part.get("uri")
+        ]
+        if context_uris:
+            client.post(
+                f"/api/v1/sessions/{sid_part}/used",
+                {"contexts": list(dict.fromkeys(context_uris))},
+            )
+        self._commit_if_threshold_reached(client, session_id)
+        return posted
+
+    def _drain_session_sync_queue(self, client: _VikingClient, *, limit: int = _SESSION_SYNC_DRAIN_LIMIT) -> int:
+        queue_dir = self._session_sync_queue_dir()
+        if not queue_dir.exists():
+            return 0
+        posted = 0
+        processed = 0
+        for path in sorted(queue_dir.glob("*.json")):
+            if processed >= limit:
+                break
+            processed += 1
+            record: Dict[str, Any] = {"version": "openviking_session_sync_queue.v1"}
+            try:
+                record = self._load_session_sync_record(path)
+                posted += self._send_session_sync_record(client, record)
+                path.unlink(missing_ok=True)
+            except Exception as exc:
+                try:
+                    self._mark_session_sync_failed(path, record, exc)
+                except Exception:
+                    logger.warning("OpenViking session sync queue update failed for %s", path, exc_info=True)
+                logger.warning("OpenViking session sync queue item failed: %s", exc)
+        return posted
 
     def _commit_if_threshold_reached(self, client: _VikingClient, session_id: str) -> None:
         self._maybe_commit_session(
