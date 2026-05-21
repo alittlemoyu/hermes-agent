@@ -73,6 +73,14 @@ class TestKimiProfile:
         assert eb["thinking"] == {"type": "enabled"}
         assert tl["reasoning_effort"] == "high"
 
+    def test_thinking_keep_all(self):
+        p = get_provider_profile("kimi")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high", "keep": "all"}
+        )
+        assert eb["thinking"] == {"type": "enabled", "keep": "all"}
+        assert tl["reasoning_effort"] == "high"
+
     def test_thinking_disabled(self):
         p = get_provider_profile("kimi")
         eb, tl = p.build_api_kwargs_extras(reasoning_config={"enabled": False})

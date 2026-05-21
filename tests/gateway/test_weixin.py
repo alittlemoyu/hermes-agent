@@ -4,6 +4,8 @@ import asyncio
 import base64
 import json
 import os
+import types
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -329,8 +331,9 @@ class TestWeixinQrLogin:
         with patch("gateway.platforms.weixin._api_get", new_callable=AsyncMock) as api_get_mock, \
              patch("gateway.platforms.weixin.time") as mock_time, \
              patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
+             patch("gateway.platforms.weixin.aiohttp", types.SimpleNamespace(ClientSession=Mock(), TCPConnector=Mock())) as aiohttp_mock, \
              patch("builtins.print"):
+            session_cls = aiohttp_mock.ClientSession
             api_get_mock.side_effect = [first_qr, pending]
             mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
             mock_time.time.side_effect = [1000, 900, 901, 902]

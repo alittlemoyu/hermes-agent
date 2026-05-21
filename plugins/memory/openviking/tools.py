@@ -208,11 +208,160 @@ class OpenVikingToolMixin:
             "results": formatted,
             "total": result.get("total", len(formatted)),
         }
+        if args.get("packet", True) is not False:
+            output["packet"] = self._build_search_packet(
+                query=query,
+                strategy=strategy,
+                results=formatted,
+                total=output["total"],
+            )
         for key in ("query_plan", "query_results"):
             if key in result:
                 output[key] = result.get(key)
 
         return json.dumps(output, ensure_ascii=False)
+
+    @classmethod
+    def _build_search_packet(
+        cls,
+        *,
+        query: str,
+        strategy: str,
+        results: List[Dict[str, Any]],
+        total: int,
+    ) -> Dict[str, Any]:
+        sections: Dict[str, List[Dict[str, Any]]] = {
+            "authoritative_candidates": [],
+            "recall_only": [],
+            "factmemory_mirrors": [],
+            "governance": [],
+        }
+        for item in results:
+            section = cls._search_packet_section(item)
+            sections[section].append(cls._search_packet_item(item, section))
+
+        sections["governance"].extend([
+            cls._governance_packet_item(
+                code="factmemory_authority_boundary",
+                summary=(
+                    "OpenViking search can suggest related memories and mirrored entity URIs, "
+                    "but Project/Task/Fact/Problem truth stays in /home/moyu/workspace/.memory/entities/ "
+                    "and memory/YYYY-MM-DD.md."
+                ),
+                confidence="high",
+            ),
+            cls._governance_packet_item(
+                code="write_boundary",
+                summary=(
+                    "Do not write back from OpenViking results into fact-memory. Confirm with "
+                    "factmemory_context/search and then use log -> stage -> commit for durable changes."
+                ),
+                confidence="high",
+            ),
+        ])
+
+        return {
+            "version": "openviking_retrieval_packet.v1",
+            "query": query,
+            "strategy": strategy,
+            "total": total,
+            "section_order": [
+                "authoritative_candidates",
+                "recall_only",
+                "factmemory_mirrors",
+                "governance",
+            ],
+            "sections": sections,
+            "source_policy": (
+                "OpenViking is retrieval and mirror infrastructure. Its results may improve recall "
+                "and association judgment, but fact-memory entities and daily logs remain authoritative "
+                "for structured project/task/fact/problem records."
+            ),
+            "write_policy": "retrieval_only_no_factmemory_writeback",
+        }
+
+    @classmethod
+    def _search_packet_section(cls, item: Dict[str, Any]) -> str:
+        uri = str(item.get("uri") or "")
+        context_type = str(item.get("context_type") or item.get("type") or "").lower()
+        if cls._is_factmemory_mirror_uri(uri, item):
+            return "factmemory_mirrors"
+        if context_type in {"resource", "skill"} or uri.startswith("viking://resources/") or "/skills/" in uri:
+            return "authoritative_candidates"
+        return "recall_only"
+
+    @staticmethod
+    def _is_factmemory_mirror_uri(uri: str, item: Dict[str, Any]) -> bool:
+        lowered = uri.lower()
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        entity_id = str(metadata.get("entity_id") or item.get("entity_id") or "")
+        return (
+            "/memories/entities/" in lowered
+            or "/factmemory/" in lowered
+            or bool(re.match(r"^(project|task|fact|problem)/", entity_id))
+        )
+
+    @classmethod
+    def _search_packet_item(cls, item: Dict[str, Any], section: str) -> Dict[str, Any]:
+        score = item.get("score")
+        if not isinstance(score, (int, float)):
+            score = 0.0
+        confidence = cls._confidence_from_score(float(score))
+        policies = {
+            "authoritative_candidates": {
+                "authority": "openviking_authoritative_candidate",
+                "source_policy": "OpenViking-owned resource or skill candidate; read before relying on details.",
+                "write_policy": "openviking_read_or_domain_tooling_only",
+            },
+            "recall_only": {
+                "authority": "openviking_recall_signal",
+                "source_policy": "Semantic recall signal; useful for association discovery but not a confirmed fact.",
+                "write_policy": "recall_only_no_direct_write",
+            },
+            "factmemory_mirrors": {
+                "authority": "factmemory_mirror_not_source_of_truth",
+                "source_policy": "Mirrored fact-memory entity; confirm against local .memory/entities before edits.",
+                "write_policy": "confirm_with_factmemory_then_log_stage_commit",
+            },
+        }
+        policy = policies[section]
+        return {
+            "source_section": section,
+            "source_policy": policy["source_policy"],
+            "authority": policy["authority"],
+            "confidence": confidence,
+            "write_policy": policy["write_policy"],
+            "why_retrieved": item.get("match_reason") or f"Semantic score {float(score):.3f} for query.",
+            "uri": item.get("uri", ""),
+            "score": round(float(score), 3),
+            "context_type": item.get("context_type") or item.get("type") or "",
+            "title": item.get("title") or item.get("name") or "",
+            "abstract": item.get("abstract", ""),
+        }
+
+    @staticmethod
+    def _confidence_from_score(score: float) -> str:
+        if score >= 0.75:
+            return "high"
+        if score >= 0.45:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _governance_packet_item(*, code: str, summary: str, confidence: str) -> Dict[str, Any]:
+        return {
+            "source_section": "governance",
+            "source_policy": "Tool-generated retrieval governance, not a retrieved fact.",
+            "authority": "policy",
+            "confidence": confidence,
+            "write_policy": "read_only_policy",
+            "why_retrieved": "Always attached to viking_search(packet=true).",
+            "uri": "",
+            "score": 0.0,
+            "context_type": "governance",
+            "code": code,
+            "summary": summary,
+        }
 
     def _tool_read(self, args: dict) -> str:
         uri = args.get("uri", "")

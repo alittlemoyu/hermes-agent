@@ -401,6 +401,112 @@ def test_sync_turn_records_used_only_for_explicit_contexts(monkeypatch):
     )
 
 
+def test_sync_turn_failure_leaves_persistent_queue_item(monkeypatch, tmp_path):
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            raise RuntimeError("server offline")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://example.test"
+    provider._session_id = "sid"
+    provider._account = "default"
+    provider._user = "default"
+    provider._agent = "hermes"
+
+    provider.sync_turn("question", "answer")
+    provider._sync_thread.join(timeout=5)
+
+    queue_files = list((tmp_path / ".hermes" / "openviking-session-sync-queue").glob("*.json"))
+    assert len(queue_files) == 1
+    queued = json.loads(queue_files[0].read_text(encoding="utf-8"))
+    assert queued["session_id"] == "sid"
+    assert queued["attempts"] == 1
+    assert "server offline" in queued["last_error"]
+    assert [payload["role"] for payload in queued["payloads"]] == ["user", "assistant"]
+
+
+def test_initialize_drains_persistent_queue_and_deletes_successful_item(monkeypatch, tmp_path):
+    class FakeClient:
+        calls = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health(self):
+            return True
+
+        def post(self, path, payload=None, **kwargs):
+            self.calls.append((path, payload or {}))
+            return {"result": {}}
+
+        def get(self, path, params=None, **kwargs):
+            self.calls.append((path, params or {}))
+            return {"result": {"pending_tokens": 0}}
+
+    home = tmp_path / ".hermes"
+    queue_dir = home / "openviking-session-sync-queue"
+    queue_dir.mkdir(parents=True)
+    (queue_dir / "001.json").write_text(json.dumps({
+        "version": "openviking_session_sync_queue.v1",
+        "session_id": "old-sid",
+        "payloads": [{"role": "user", "parts": [{"type": "text", "text": "old"}]}],
+        "attempts": 0,
+        "created_at": "2026-05-20T00:00:00Z",
+        "updated_at": "2026-05-20T00:00:00Z",
+        "last_error": "",
+    }), encoding="utf-8")
+    FakeClient.calls = []
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://example.test")
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("new-sid")
+
+    assert not list(queue_dir.glob("*.json"))
+    assert ("/api/v1/sessions/old-sid/messages", {"role": "user", "parts": [{"type": "text", "text": "old"}]}) in FakeClient.calls
+
+
+def test_session_sync_queue_drain_limit(monkeypatch, tmp_path):
+    class FakeClient:
+        calls = []
+
+        def post(self, path, payload=None, **kwargs):
+            self.calls.append((path, payload or {}))
+            return {"result": {}}
+
+        def get(self, path, params=None, **kwargs):
+            return {"result": {"pending_tokens": 0}}
+
+    home = tmp_path / ".hermes"
+    queue_dir = home / "openviking-session-sync-queue"
+    queue_dir.mkdir(parents=True)
+    for index in range(101):
+        (queue_dir / f"{index:03d}.json").write_text(json.dumps({
+            "version": "openviking_session_sync_queue.v1",
+            "session_id": "sid",
+            "payloads": [{"role": "user", "parts": [{"type": "text", "text": str(index)}]}],
+            "attempts": 0,
+            "created_at": "2026-05-20T00:00:00Z",
+            "updated_at": "2026-05-20T00:00:00Z",
+            "last_error": "",
+        }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    provider = OpenVikingMemoryProvider()
+
+    posted = provider._drain_session_sync_queue(FakeClient(), limit=100)
+
+    assert posted == 100
+    assert len(list(queue_dir.glob("*.json"))) == 1
+    assert (queue_dir / "100.json").exists()
+
+
 def test_background_review_initialize_disables_auto_capture_but_keeps_client(monkeypatch):
     class FakeClient:
         calls = []
