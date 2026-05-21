@@ -39,12 +39,14 @@ def maybe_bridge_factmemory_clarify(
     if request is None:
         return result
 
-    question, choices = request
+    question, raw_choices = request
+    choices = _display_choices(raw_choices)
     bridge: Dict[str, Any] = {
         "needed": True,
         "asked": False,
         "question": question,
         "choices_offered": choices,
+        "raw_choices": raw_choices,
     }
 
     if callback is None:
@@ -71,6 +73,11 @@ def maybe_bridge_factmemory_clarify(
 
 
 def _build_confirmation_request(payload: Dict[str, Any]) -> Optional[Tuple[str, Optional[List[Any]]]]:
+    item_with_choices = _first_item_with_choices(payload)
+    if item_with_choices is not None:
+        label = _item_label(item_with_choices)
+        return (f"factmemory 需要确认计划项「{label}」如何处理：", item_with_choices.get("clarify_options"))
+
     questions = _string_list(payload.get("confirmation_questions"))
     if questions:
         return (_format_questions(questions), _first_choices(payload))
@@ -78,11 +85,6 @@ def _build_confirmation_request(payload: Dict[str, Any]) -> Optional[Tuple[str, 
     lock_questions = _string_list(payload.get("lock_confirmation_questions"))
     if lock_questions:
         return (_format_questions(lock_questions), _first_choices(payload))
-
-    item_with_choices = _first_item_with_choices(payload)
-    if item_with_choices is not None:
-        label = _item_label(item_with_choices)
-        return (f"factmemory 需要你确认「{label}」应该如何处理：", item_with_choices.get("clarify_options"))
 
     if _contains_truthy_key(payload, "needs_confirmation") or payload.get("requires_user_confirmation"):
         return ("factmemory 需要人工确认后才能继续。请说明你希望我怎么处理：", _first_choices(payload))
@@ -97,8 +99,48 @@ def _build_confirmation_request(payload: Dict[str, Any]) -> Optional[Tuple[str, 
 def _format_questions(questions: List[str]) -> str:
     if len(questions) == 1:
         return questions[0]
-    bullets = "\n".join(f"- {q}" for q in questions[:5])
-    return f"factmemory 需要你确认以下问题：\n{bullets}"
+    bullets = "\n".join(f"- {q}" for q in questions[:3])
+    extra = "" if len(questions) <= 3 else f"\n- 另有 {len(questions) - 3} 个候选先不在本次询问中展开"
+    return f"factmemory 需要你先确认一个方向：\n{bullets}{extra}"
+
+
+def _display_choices(choices: Optional[List[Any]]) -> Optional[List[str]]:
+    if not choices:
+        return None
+    display: List[str] = []
+    for choice in choices[:7]:
+        display.append(_display_choice(choice))
+    return display
+
+
+def _display_choice(choice: Any) -> str:
+    if not isinstance(choice, dict):
+        return str(choice).strip()
+    label = str(
+        choice.get("label")
+        or choice.get("title")
+        or choice.get("name")
+        or choice.get("id")
+        or choice.get("value")
+        or ""
+    ).strip()
+    entity_id = str(choice.get("entity_id") or choice.get("id") or "").strip()
+    kind = str(choice.get("kind") or "").strip()
+    confidence = choice.get("confidence")
+    description = str(choice.get("description") or choice.get("detail") or "").strip()
+
+    bits = [label or entity_id or description]
+    if entity_id and entity_id not in bits[0] and entity_id != kind:
+        bits.append(entity_id)
+    if kind and kind not in bits:
+        bits.append(kind)
+    if confidence is not None:
+        bits.append(f"confidence={confidence}")
+
+    first_line = " | ".join(bit for bit in bits if bit)
+    if description and description != first_line:
+        return f"{first_line}\n  {description}"
+    return first_line
 
 
 def _first_item_with_choices(value: Any) -> Optional[Dict[str, Any]]:
@@ -175,4 +217,3 @@ def _string_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
-
