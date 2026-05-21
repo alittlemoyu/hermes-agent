@@ -77,9 +77,9 @@ def _build_confirmation_request(payload: Dict[str, Any]) -> Optional[Tuple[str, 
     if item_with_choices is not None:
         label = _item_label(item_with_choices)
         question = (
-            "这个计划项要归到哪条记忆？\n"
-            f"计划项：{label}\n"
-            "请选择最合适的一项；如果都不合适，可以选“补充说明”或“作为新事项记录”。"
+            "**需要确认：计划项归属**\n\n"
+            f"> {label}\n\n"
+            "请选择最合适的一项。若都不合适，选“补充说明”或“作为新事项记录”。"
         )
         return (question, item_with_choices.get("clarify_options"))
 
@@ -92,11 +92,11 @@ def _build_confirmation_request(payload: Dict[str, Any]) -> Optional[Tuple[str, 
         return (_format_questions(lock_questions), _first_choices(payload))
 
     if _contains_truthy_key(payload, "needs_confirmation") or payload.get("requires_user_confirmation"):
-        return ("这一步需要你确认后才能继续。请说明你希望我怎么处理：", _first_choices(payload))
+        return ("**这一步需要你确认后才能继续。**\n\n请说明你希望我怎么处理：", _first_choices(payload))
 
     commands = payload.get("confirmation_commands")
     if isinstance(commands, list) and commands:
-        return ("这里有待确认的候选记忆。请选择确认、拒绝，或说明要继续查看：", _command_choices(commands))
+        return ("**这里有待确认的候选记忆。**\n\n请选择确认、拒绝，或说明要继续查看：", _command_choices(commands))
 
     return None
 
@@ -106,7 +106,7 @@ def _format_questions(questions: List[str]) -> str:
         return questions[0]
     bullets = "\n".join(f"- {q}" for q in questions[:3])
     extra = "" if len(questions) <= 3 else f"\n- 另有 {len(questions) - 3} 个候选先不在本次询问中展开"
-    return f"需要你先确认一个方向：\n{bullets}{extra}"
+    return f"**需要你先确认一个方向：**\n\n{bullets}{extra}"
 
 
 def _display_choices(choices: Optional[List[Any]]) -> Optional[List[str]]:
@@ -135,22 +135,22 @@ def _display_choice(choice: Any) -> str:
     description = str(choice.get("description") or choice.get("detail") or "").strip()
 
     if kind == "existing_entity":
-        title = _strip_entity_id_suffix(label) or entity_id or "关联到已有记忆"
+        title = f"**{_strip_entity_id_suffix(label) or entity_id or '关联到已有记忆'}**"
         details = []
         if entity_id:
-            details.append(f"已有记录：{entity_id}")
+            details.append(f"已有记录：`{entity_id}`")
         if confidence is not None:
-            details.append(f"匹配度 {confidence}/100")
+            details.append(f"匹配度：{confidence}/100")
         if description:
             details.append(_humanize_description(description))
         return _join_choice_lines(title, details)
 
     if kind == "refine_explanation":
-        title = "我补充说明，再重新匹配"
+        title = "**我补充说明，再重新匹配**"
         return _join_choice_lines(title, [_humanize_description(description)])
 
     if kind == "create_new_entity":
-        title = "作为新事项记录"
+        title = "**作为新事项记录**"
         return _join_choice_lines(title, [_humanize_description(description)])
 
     bits = [label or entity_id or description]
@@ -179,7 +179,7 @@ def _join_choice_lines(title: str, details: List[str]) -> str:
     clean_details = [item for item in details if item]
     if not clean_details:
         return title
-    return f"{title}\n  {'；'.join(clean_details)}"
+    return title + "\n" + "\n".join(f"  - {item}" for item in clean_details)
 
 
 def _humanize_description(description: str) -> str:
