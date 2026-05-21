@@ -29,6 +29,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.factmemory_clarify_bridge import maybe_bridge_factmemory_clarify
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -883,6 +884,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
 
         if isinstance(function_result, str):
+            function_result = maybe_bridge_factmemory_clarify(
+                function_name,
+                function_result,
+                agent.clarify_callback,
+            )
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
             )

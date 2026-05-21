@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.factmemory_clarify_bridge import maybe_bridge_factmemory_clarify
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
@@ -1675,7 +1676,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 pass
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        return agent._memory_manager.handle_tool_call(function_name, function_args)
+        result = agent._memory_manager.handle_tool_call(function_name, function_args)
+        return maybe_bridge_factmemory_clarify(function_name, result, agent.clarify_callback)
     elif function_name == "clarify":
         from tools.clarify_tool import clarify_tool as _clarify_tool
         return _clarify_tool(
@@ -1686,7 +1688,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
     else:
-        return _ra().handle_function_call(
+        result = _ra().handle_function_call(
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
@@ -1695,6 +1697,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
         )
+        return maybe_bridge_factmemory_clarify(function_name, result, agent.clarify_callback)
 
 
 
