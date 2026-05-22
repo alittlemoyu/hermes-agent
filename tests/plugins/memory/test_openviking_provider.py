@@ -847,6 +847,8 @@ def test_poll_commit_task_reads_nested_official_result(caplog):
             "status": "completed",
             "result": {
                 "memories_extracted": {"profile": 1, "preference": 2},
+                "session_skills_extracted": 1,
+                "session_skill_uris": ["viking://agent/hermes/skills/review/SKILL.md"],
                 "archive_uri": "",
             },
         }
@@ -857,6 +859,8 @@ def test_poll_commit_task_reads_nested_official_result(caplog):
 
     provider._client.get.assert_called_once_with("/api/v1/tasks/task-1")
     assert "total=3" in caplog.text
+    assert "session_skills=1" in caplog.text
+    assert "viking://agent/hermes/skills/review/SKILL.md" in caplog.text
 
 
 def test_tool_add_resource_uploads_existing_local_file(tmp_path):
