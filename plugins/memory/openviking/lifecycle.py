@@ -966,6 +966,20 @@ class OpenVikingLifecycleMixin:
                     )
                     total = sum(mem_extracted.values()) if isinstance(mem_extracted, dict) else 0
                     archive_uri = task_result.get("archive_uri") or result.get("archive_uri", "")
+                    skill_count = (
+                        task_result.get("session_skills_extracted")
+                        or result.get("session_skills_extracted")
+                        or 0
+                    )
+                    skill_uris = (
+                        task_result.get("session_skill_uris")
+                        or result.get("session_skill_uris")
+                        or []
+                    )
+                    if not isinstance(skill_count, (int, float)):
+                        skill_count = 0
+                    if not isinstance(skill_uris, list):
+                        skill_uris = []
 
                     # Try to read memory_diff.json for audit trail
                     memory_diff = None
@@ -991,14 +1005,20 @@ class OpenVikingLifecycleMixin:
                         deletes = len(ops.get("deletes", []))
                         logger.info(
                             "OpenViking extraction completed: task=%s memories=%s total=%d "
-                            "diff=(+%d ~%d -%d)",
-                            task_id, mem_extracted, total, adds, updates, deletes
+                            "session_skills=%d diff=(+%d ~%d -%d)",
+                            task_id, mem_extracted, total, skill_count, adds, updates, deletes
                         )
                     else:
                         logger.info(
-                        "OpenViking extraction completed: task=%s memories=%s total=%d",
-                        task_id, mem_extracted, total
-                    )
+                            "OpenViking extraction completed: task=%s memories=%s total=%d "
+                            "session_skills=%d",
+                            task_id, mem_extracted, total, skill_count
+                        )
+                    if skill_uris:
+                        logger.info(
+                            "OpenViking session skill extraction: task=%s uris=%s",
+                            task_id, skill_uris,
+                        )
                     return task_result or result
                 elif status == "failed":
                     logger.warning(
