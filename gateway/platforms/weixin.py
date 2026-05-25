@@ -1354,17 +1354,17 @@ class WeixinAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         if not check_weixin_requirements():
-            message = "Weixin startup failed: aiohttp and cryptography are required"
+            message = "微信启动失败：需要安装 aiohttp 和 cryptography"
             self._set_fatal_error("weixin_missing_dependency", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
         if not self._token:
-            message = "Weixin startup failed: WEIXIN_TOKEN is required"
+            message = "微信启动失败：需要配置 WEIXIN_TOKEN"
             self._set_fatal_error("weixin_missing_token", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
         if not self._account_id:
-            message = "Weixin startup failed: WEIXIN_ACCOUNT_ID is required"
+            message = "微信启动失败：需要配置 WEIXIN_ACCOUNT_ID"
             self._set_fatal_error("weixin_missing_account", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
@@ -2092,7 +2092,7 @@ class WeixinAdapter(BasePlatformAdapter):
         # Native outbound Weixin voice bubbles are not proven-working in the
         # upstream reference implementation. Prefer a reliable file attachment
         # fallback so users at least receive playable audio, even for .silk.
-        fallback_caption = caption or "[voice message as attachment]"
+        fallback_caption = caption or "[语音消息，以附件形式发送]"
         try:
             message_id = await self._send_file(
                 chat_id,
@@ -2322,9 +2322,9 @@ async def send_weixin_direct(
     cdn_base_url = str(extra.get("cdn_base_url") or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
     resolved_token = str(token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
     if not resolved_token:
-        return {"error": "Weixin token missing. Configure WEIXIN_TOKEN or platforms.weixin.token."}
+        return {"error": "微信 token 缺失。请配置 WEIXIN_TOKEN 或 platforms.weixin.token。"}
     if not account_id:
-        return {"error": "Weixin account ID missing. Configure WEIXIN_ACCOUNT_ID or platforms.weixin.extra.account_id."}
+        return {"error": "微信账号 ID 缺失。请配置 WEIXIN_ACCOUNT_ID 或 platforms.weixin.extra.account_id。"}
 
     token_store = ContextTokenStore(str(get_hermes_home()))
     token_store.restore(account_id)
@@ -2346,7 +2346,7 @@ async def send_weixin_direct(
         if cleaned:
             last_result = await live_adapter.send(chat_id, cleaned, metadata=send_metadata)
             if not last_result.success:
-                return {"error": f"Weixin send failed: {last_result.error}"}
+                return {"error": f"微信发送失败：{last_result.error}"}
 
         for media_path, _is_voice in media_files or []:
             ext = Path(media_path).suffix.lower()
@@ -2355,7 +2355,7 @@ async def send_weixin_direct(
             else:
                 last_result = await live_adapter.send_document(chat_id, media_path)
             if not last_result.success:
-                return {"error": f"Weixin media send failed: {last_result.error}"}
+                return {"error": f"微信媒体发送失败：{last_result.error}"}
 
         return {
             "success": True,
@@ -2392,7 +2392,7 @@ async def send_weixin_direct(
         if cleaned:
             last_result = await adapter.send(chat_id, cleaned, metadata=send_metadata)
             if not last_result.success:
-                return {"error": f"Weixin send failed: {last_result.error}"}
+                return {"error": f"微信发送失败：{last_result.error}"}
 
         for media_path, _is_voice in media_files or []:
             ext = Path(media_path).suffix.lower()
@@ -2401,7 +2401,7 @@ async def send_weixin_direct(
             else:
                 last_result = await adapter.send_document(chat_id, media_path)
             if not last_result.success:
-                return {"error": f"Weixin media send failed: {last_result.error}"}
+                return {"error": f"微信媒体发送失败：{last_result.error}"}
 
         return {
             "success": True,
