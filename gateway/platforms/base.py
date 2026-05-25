@@ -2042,7 +2042,7 @@ class BasePlatformAdapter(ABC):
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            lines.append("回复数字、选项内容，或输入你自己的答案。")
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).
