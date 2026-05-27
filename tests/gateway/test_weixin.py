@@ -798,7 +798,7 @@ class TestWeixinVoiceSending:
         send_file_mock.assert_awaited_once_with(
             "wxid_test123",
             str(source),
-            "[voice message as attachment]",
+            "[语音消息，以附件形式发送]",
             force_file_attachment=True,
         )
 
