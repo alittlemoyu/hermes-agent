@@ -510,6 +510,12 @@ as a side effect of importing `model_tools.py`. Code paths that read plugin
 state without importing `model_tools.py` first must call `discover_plugins()`
 explicitly (it's idempotent).
 
+Local memory-adjacent plugins such as `factmemory` and `document_memory`
+ship from `~/.hermes/plugins/`, not this repo. Their write boundaries and
+recovery paths must be enforced in tool schemas, handler validation, and
+returned `tool_contract` / `write_policy` fields. Keep AGENTS prose as a
+pointer to those contracts; do not encode executable workflow rules here.
+
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
 Separate discovery system for pluggable memory backends. Current built-in

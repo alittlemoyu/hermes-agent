@@ -51,6 +51,50 @@ def test_tool_schema_documents_retrieval_vs_path_matching_boundary():
     assert "Canonical AGFS filename/path matching" in glob_desc
 
 
+def test_openviking_tool_schemas_include_local_contracts():
+    required_fields = {
+        "when_to_use",
+        "when_not_to_use",
+        "required_before_call",
+        "next_action",
+        "dangerous_misroutes",
+        "write_policy",
+        "recovery_hint",
+    }
+
+    for schema in OpenVikingMemoryProvider().get_tool_schemas():
+        assert required_fields <= set(schema)
+        for field in required_fields:
+            assert schema[field], f"{schema['name']} missing {field}"
+
+
+def test_openviking_tool_results_include_local_contracts_without_connection():
+    provider = OpenVikingMemoryProvider()
+
+    result = json.loads(provider.handle_tool_call("viking_search", {"query": "factmemory"}))
+
+    assert result["error"] == "OpenViking server not connected"
+    assert result["tool_contract"]["write_policy"] == "read_only_retrieval"
+    assert result["recovery_hint"]
+
+
+def test_openviking_input_errors_include_precise_recovery_fields():
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+
+    search = json.loads(provider.handle_tool_call("viking_search", {}))
+    read = json.loads(provider.handle_tool_call("viking_read", {}))
+    fs_rm = json.loads(provider.handle_tool_call("viking_fs", {"action": "rm"}))
+
+    assert search["error_code"] == "missing_query"
+    assert search["required_before_call"] == ["query"]
+    assert search["tool_contract"]["write_policy"] == "read_only_retrieval"
+    assert read["error_code"] == "missing_uri"
+    assert "viking:// uri" in read["required_before_call"][0]
+    assert fs_rm["error_code"] == "missing_uri"
+    assert "explicit owner intent" in fs_rm["required_before_call"][0]
+
+
 def test_viking_find_is_hidden_compat_tool_by_default(monkeypatch):
     monkeypatch.delenv("OPENVIKING_EXPOSE_COMPAT_TOOLS", raising=False)
     reload(openviking_tool_policy)
