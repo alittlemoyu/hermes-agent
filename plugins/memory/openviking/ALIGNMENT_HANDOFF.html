@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes OpenViking Alignment Handoff</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f7f4;
+      --fg: #202124;
+      --muted: #62645f;
+      --panel: #ffffff;
+      --line: #d8d8d2;
+      --accent: #0b6b5f;
+      --accent-soft: #e4f2ee;
+      --warn: #8a4b08;
+      --warn-soft: #fff0d8;
+      --code: #f1f1ec;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #171916;
+        --fg: #e7e8e2;
+        --muted: #b4b6ad;
+        --panel: #20231f;
+        --line: #3a3d37;
+        --accent: #76d0c4;
+        --accent-soft: #173b36;
+        --warn: #f1bd75;
+        --warn-soft: #3b2b17;
+        --code: #292c27;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 56px;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 24px;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.94em;
+    }
+
+    code {
+      background: var(--code);
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+
+    pre {
+      overflow-x: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin: 10px 0 0;
+      white-space: pre-wrap;
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 0 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    .lede {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin: 18px 0 30px;
+    }
+
+    .card,
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    section {
+      margin: 16px 0;
+    }
+
+    .tag {
+      display: inline-block;
+      margin: 0 8px 8px 0;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .warning {
+      background: var(--warn-soft);
+      border-color: color-mix(in srgb, var(--warn), var(--line) 45%);
+    }
+
+    .warning h2,
+    .warning strong {
+      color: var(--warn);
+    }
+
+    .checklist li::marker {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Hermes OpenViking Alignment Handoff</h1>
+      <p class="lede">
+        这个文件用于下次 OpenViking 或 Hermes 主线更新时快速回到当前现场：
+        当前目标、改动边界、参考源码、合并步骤、测试守门线和不能踩的坑都集中在这里。
+      </p>
+      <p class="small">Last updated: 2026-05-15. Current merge base snapshot: Hermes <code>origin/main@9fb40e6a3</code>, local merge commit <code>ff2b6ccd9</code>.</p>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <span class="tag">Current intent</span>
+        <p>
+          Hermes 保持现有 <code>viking_*</code> 工具体系，同时吸收 OpenViking 官方
+          LangChain/LangGraph adapter 的核心 context lifecycle。
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">Primary refs</span>
+        <p>
+          OpenViking 官方源码在 <code>/tmp/openviking-official-readonly</code>；
+          Hermes 最新只读参考副本在 <code>/tmp/hermes-agent-latest-readonly</code>。
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">Scope</span>
+        <p>
+          本轮只聚焦 session context、recall/capture、commit policy、archive search、
+          message parts 和测试可验证性。
+        </p>
+      </div>
+    </div>
+
+    <section>
+      <h2>Read This First</h2>
+      <ul class="checklist">
+        <li>不要把官方 OpenViking LangChain/LangGraph tool aliases 直接加进 Hermes；继续使用 Hermes 当前工具面。</li>
+        <li>不要在这一层实现 LangGraph Store/KV durable state；它是下一层能力，应该单独设计。</li>
+        <li>不要持久化 runtime/system policy 文本；只捕获真实 user、assistant、tool、context parts。</li>
+        <li>合并主线时优先保护当前 OpenViking 补丁层，不要整包回滚已有本地改动。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Files That Define The Boundary</h2>
+      <ul>
+        <li><code>agent/memory_provider.py</code>: <code>sync_turn(..., messages=None)</code> 是兼容式扩展。</li>
+        <li><code>agent/memory_manager.py</code>: <code>sync_all</code> 用 <code>inspect.signature</code> 只给支持的 provider 传 <code>messages</code>。</li>
+        <li><code>run_agent.py</code>: 完成 turn 后把 <code>conversation_history=list(messages)</code> 传给 external memory sync。</li>
+        <li><code>plugins/memory/openviking/__init__.py</code>: OpenViking provider 的 context assembly、capture、commit、archive 工具都在这里。</li>
+        <li><code>tests/plugins/memory/test_openviking_provider.py</code>: fake-client 单测覆盖核心 lifecycle。</li>
+        <li><code>tests/openviking_plugin/test_openviking.py</code>: 插件注册和工具行为回归。</li>
+        <li><code>tools/approval.py</code>: 远程 admin/destructive tool action approval 的 fail-closed 通道。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>OpenViking Official Patterns We Mirrored</h2>
+      <ul>
+        <li><code>&lt;openviking_context&gt;...&lt;/openviking_context&gt;</code> 是自动注入 marker；旧的 <code>&lt;relevant-memories&gt;</code> 只作为清理兼容。</li>
+        <li>Session context 优先读取 <code>/api/v1/sessions/{session_id}/context</code> 的 <code>latest_archive_overview</code>、<code>pre_archive_abstracts</code> 和可选 active messages。</li>
+        <li>Recall 命中作为 <code>ContextPart</code> 记录，assistant capture 后通过 <code>/used</code> 回传真实使用痕迹。</li>
+        <li>Assistant tool calls 和 tool results 使用 <code>ToolPart</code>，避免恢复历史时重复触发 assistant tool call。</li>
+        <li>Commit policy 内部支持 <code>never</code>、<code>always</code>、<code>pending_tokens</code>，默认仍是 pending-token threshold。</li>
+        <li>Pending-token commit 查询 session 时不自动创建 session；缺失或查询失败时跳过并 debug 记录。</li>
+        <li>Archive search 先 grep <code>viking://session/{session_id}/history</code>，无命中时 fallback 到 assembled context sections。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Local Reference Commands</h2>
+      <h3>Refresh latest Hermes reference</h3>
+      <pre><code>git -C /home/moyu/.hermes/hermes-agent fetch origin
+rm -rf /tmp/hermes-agent-latest-readonly
+git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /tmp/hermes-agent-latest-readonly</code></pre>
+
+      <h3>Find official OpenViking adapter points</h3>
+      <pre><code>rg -n "OPENVIKING_CONTEXT_MARKER|OpenVikingCommitPolicy|latest_archive_overview|pre_archive_abstracts|ToolPart|ContextPart" \
+  /tmp/openviking-official-readonly/openviking/integrations/langchain</code></pre>
+
+      <h3>Compare Hermes sync boundary</h3>
+      <pre><code>rg -n "def sync_all|def sync_turn|_sync_external_memory_for_turn|conversation_history" \
+  /tmp/hermes-agent-latest-readonly/agent/memory_manager.py \
+  /tmp/hermes-agent-latest-readonly/agent/memory_provider.py \
+  /tmp/hermes-agent-latest-readonly/run_agent.py \
+  /home/moyu/.hermes/hermes-agent/agent/memory_manager.py \
+  /home/moyu/.hermes/hermes-agent/agent/memory_provider.py \
+  /home/moyu/.hermes/hermes-agent/run_agent.py</code></pre>
+    </section>
+
+    <section>
+      <h2>Merge Workflow For Future Updates</h2>
+      <ol>
+        <li>Run <code>git status --short --branch</code> and note whether OpenViking files are dirty.</li>
+        <li>Create a patch backup: <code>git diff --binary &gt; /tmp/hermes-openviking-before-main-merge.patch</code>.</li>
+        <li>Stash dirty changes with a descriptive name if needed.</li>
+        <li>Fetch and merge <code>origin/main</code>.</li>
+        <li>Restore stash and resolve conflicts by preserving Hermes local OpenViking lifecycle behavior unless upstream has an equivalent or better implementation.</li>
+        <li>Re-run the verification suite below before committing or reporting readiness.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Verification Suite</h2>
+      <pre><code>scripts/run_tests.sh \
+  tests/plugins/memory/test_openviking_provider.py \
+  tests/openviking_plugin/test_openviking.py</code></pre>
+
+      <pre><code>env HERMES_HOME=/tmp/hermes-agent-test-home scripts/run_tests.sh \
+  tests/agent/test_memory_provider.py \
+  tests/agent/test_memory_session_switch.py \
+  tests/run_agent/test_commit_memory_session_context_engine.py \
+  tests/run_agent/test_compression_boundary_hook.py \
+  tests/cli/test_session_boundary_hooks.py</code></pre>
+
+      <pre><code>venv/bin/python -m py_compile \
+  agent/memory_provider.py \
+  agent/memory_manager.py \
+  run_agent.py \
+  plugins/memory/openviking/__init__.py \
+  tools/approval.py</code></pre>
+
+      <pre><code>git diff --check</code></pre>
+      <p class="small">
+        如果不设置 <code>HERMES_HOME=/tmp/hermes-agent-test-home</code>，部分测试可能因为当前环境日志路径只读而失败；
+        这不是 OpenViking lifecycle 逻辑失败。
+      </p>
+    </section>
+
+    <section class="warning">
+      <h2>Known Caveats</h2>
+      <ul>
+        <li>当前工作树中已有更宽的 OpenViking 工具扩展，例如 <code>viking_fs</code>、<code>viking_add_skill</code>、<code>viking_admin</code>。它们不是官方 alias 迁移，不要把它们和 LangChain/LangGraph 兼容别名混为一谈。</li>
+        <li>如果 upstream Hermes 后续也扩展了 <code>MemoryProvider.sync_turn</code>，需要优先对齐 upstream 参数名和语义，再保留 OpenViking 的 structured capture。</li>
+        <li>如果 upstream OpenViking REST API 改了 session context 或 archive payload shape，先改 fake-client 测试，再改 provider。</li>
+        <li>不要因为 archive fallback 能本地匹配，就跳过 raw history grep；grep-first 是为了保留更精确的 server-side history search。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Expected Green State</h2>
+      <ul>
+        <li>OpenViking tests: <code>67 passed</code> on 2026-05-15 after merging Hermes <code>origin/main@9fb40e6a3</code>.</li>
+        <li>Hermes memory/session/compression regression tests: <code>87 passed</code> with temporary writable <code>HERMES_HOME</code>.</li>
+        <li>Syntax compile and <code>git diff --check</code>: clean.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

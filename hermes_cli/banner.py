@@ -128,6 +128,11 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OPENVIKING_UPDATE_PATH_MARKERS = (
+    "plugins/memory/openviking",
+    "tests/plugins/memory/test_openviking",
+    "tests/openviking_plugin",
+)
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -173,6 +178,106 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass
     return None
+
+
+def count_update_commits_by_scope(
+    repo_dir: Path,
+    compare_branch: str = "origin/main",
+) -> Optional[Dict[str, int]]:
+    """Split behind commits into OpenViking-touching and other commits.
+
+    This is display-only. The update decision still uses the normal total
+    behind count; this helper gives Moyu a quick signal for whether the current
+    upstream delta affects the OpenViking provider area.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", f"HEAD..{compare_branch}"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode != 0:
+            return None
+        commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        return None
+
+    openviking = 0
+    other = 0
+    for commit in commits:
+        try:
+            changed = subprocess.run(
+                ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(repo_dir),
+            )
+            if changed.returncode != 0:
+                other += 1
+                continue
+            paths = [line.strip().lower() for line in changed.stdout.splitlines() if line.strip()]
+            if any(
+                any(marker in path for marker in _OPENVIKING_UPDATE_PATH_MARKERS)
+                or "openviking" in path
+                for path in paths
+            ):
+                openviking += 1
+            else:
+                other += 1
+        except Exception:
+            other += 1
+
+    return {"total": len(commits), "openviking": openviking, "other": other}
+
+
+def format_update_scope_breakdown(
+    repo_dir: Optional[Path],
+    behind: int,
+    compare_branch: str = "origin/main",
+) -> str:
+    """Return a short display suffix like ``" (2 OpenViking, 5 other)"``."""
+    if repo_dir is None or behind <= 0:
+        return ""
+    breakdown = count_update_commits_by_scope(repo_dir, compare_branch=compare_branch)
+    if not breakdown or breakdown.get("total") != behind:
+        return ""
+    openviking = int(breakdown.get("openviking") or 0)
+    other = int(breakdown.get("other") or 0)
+    if openviking == 0:
+        return f" ({other} other)"
+    if other == 0:
+        return f" ({openviking} OpenViking)"
+    return f" ({openviking} OpenViking, {other} other)"
+
+
+def _git_rev(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision without touching the network."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", rev],
+            capture_output=True, text=True, timeout=2,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def _update_cache_identity(repo_dir: Optional[Path], embedded_rev: Optional[str]) -> dict:
+    """Return cheap local identity fields that invalidate stale update cache.
+
+    Manual updates can move HEAD without going through ``hermes update``, so a
+    six-hour cache keyed only by the embedded revision keeps reporting an old
+    behind count.  Include local refs that change on manual reset/merge/fetch,
+    while still avoiding network work on the cache fast path.
+    """
+    identity = {"rev": embedded_rev}
+    if embedded_rev or repo_dir is None:
+        return identity
+    identity["repo_head"] = _git_rev(repo_dir, "HEAD")
+    identity["origin_head"] = _git_rev(repo_dir, "origin/main")
+    return identity
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -231,15 +336,33 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir: Optional[Path] = None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    if not embedded_rev:
+        # Prefer the running code's location over the profile-scoped path.
+        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
+        # Path(__file__) always resolves to the actual installed checkout.
+        candidate = Path(__file__).parent.parent.resolve()
+        if not (candidate / ".git").exists():
+            candidate = hermes_home / "hermes-agent"
+        if (candidate / ".git").exists():
+            repo_dir = candidate
+
+    cache_identity = _update_cache_identity(repo_dir, embedded_rev)
+
+    # Read cache.  Invalidate not only when the embedded rev changes, but also
+    # when a git checkout's local refs move.  This handles manual merges/resets
+    # without waiting for the six-hour network-throttle window to expire.
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
+            cache_matches_identity = all(
+                cached.get(key) == value for key, value in cache_identity.items()
+            )
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-                and cached.get("rev") == embedded_rev
+                and cache_matches_identity
             ):
                 return cached.get("behind")
     except Exception:
@@ -247,20 +370,16 @@ def check_for_updates() -> Optional[int]:
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
+    elif repo_dir is None:
+        behind = check_via_pypi()
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
-            behind = check_via_pypi()
-        else:
-            behind = _check_via_local_git(repo_dir)
+        behind = _check_via_local_git(repo_dir)
+        # A fetch may have moved origin/main, so store the post-check identity.
+        cache_identity = _update_cache_identity(repo_dir, embedded_rev)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        payload = {"ts": now, "behind": behind, **cache_identity}
+        cache_file.write_text(json.dumps(payload))
     except Exception:
         pass
 
@@ -658,8 +777,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
             from hermes_cli.config import get_managed_update_command, recommended_update_command
             if behind > 0:
                 commits_word = "commit" if behind == 1 else "commits"
+                scope_suffix = format_update_scope_breakdown(
+                    _resolve_repo_dir(),
+                    behind,
+                )
                 right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                    f"[bold yellow]⚠ {behind} {commits_word} behind{scope_suffix}[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
             else:

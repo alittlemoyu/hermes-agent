@@ -76,6 +76,11 @@ class ProviderProfile:
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
     # empty = use main model
+    # Disable provider-native thinking when this provider is activated as a
+    # mid-conversation fallback. Some thinking APIs require provider-local
+    # reasoning echo-back that cannot be reconstructed from another provider's
+    # history.
+    disable_thinking_on_fallback: bool = False
 
     # ── Hooks (override in subclass for complex providers) ───
 

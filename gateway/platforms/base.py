@@ -61,11 +61,17 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
+    platform_name = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
-    if thread_id is None:
+    run_id = getattr(source, "_hermes_run_id", None)
+    metadata = {}
+    if thread_id is not None:
+        metadata["thread_id"] = thread_id
+    if platform_name == "weixin" and run_id:
+        metadata["run_id"] = run_id
+    if not metadata:
         return None
-    metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if platform_name == "telegram" and getattr(source, "chat_type", None) == "dm" and thread_id is not None:
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
@@ -2042,7 +2048,7 @@ class BasePlatformAdapter(ABC):
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            lines.append("回复数字、选项内容，或输入你自己的答案。")
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).
@@ -3510,6 +3516,11 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
+        if (
+            _platform_name(getattr(event.source, "platform", None)) == "weixin"
+            and not getattr(event.source, "_hermes_run_id", None)
+        ):
+            setattr(event.source, "_hermes_run_id", f"hermes-weixin-{uuid.uuid4().hex}")
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
@@ -3875,6 +3886,18 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Stop typing before any post-delivery callback work.  Some
+            # callbacks can release background-review messages or run cleanup
+            # after the main reply has already been sent; those should not keep
+            # persistent platform indicators (Weixin/Slack/etc.) showing that
+            # the foreground agent is still working.
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
+
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -3905,15 +3928,6 @@ class BasePlatformAdapter(ABC):
                         await _post_result
                 except Exception:
                     pass
-            # Stop typing indicator
-            await _stop_typing_task()
-            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
-            # that may have been recreated by _keep_typing after the last stop_typing()
-            try:
-                if hasattr(self, "stop_typing"):
-                    await self.stop_typing(event.source.chat_id)
-            except Exception:
-                pass
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             await self._flush_text_debounce_now(session_key)

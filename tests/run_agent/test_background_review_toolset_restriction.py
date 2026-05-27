@@ -10,7 +10,9 @@ so the cache-key matches, and enforces the memory+skills restriction at
 runtime via a thread-local whitelist on the existing
 ``get_pre_tool_call_block_message`` gate. Safety is preserved mechanically
 (any non-whitelisted dispatch is blocked) without the schema-level narrowing
-that caused the prefix-cache miss.
+that caused the prefix-cache miss. OpenViking read/write artifact tools are
+allowed so self-evolution can collaborate with the durable memory layer
+without allowing admin/destructive maintenance tools.
 """
 
 import threading
@@ -87,12 +89,13 @@ def test_background_review_matches_parent_toolset_config():
 
 
 def test_background_review_installs_thread_local_whitelist():
-    """The review fork must install a memory/skills-only thread-local whitelist.
+    """The review fork must install a memory/skills/OpenViking whitelist.
 
     The schema-level toolset narrowing was lifted (for prefix-cache parity),
     so #15204's safety contract now relies on the runtime whitelist gate to
     deny terminal/send_message/delegate_task at dispatch time. Verify the
-    whitelist is set with exactly the memory+skills tool names.
+    whitelist allows selected OpenViking artifact tools while keeping
+    destructive/admin maintenance tools out.
     """
     import run_agent
     from hermes_cli import plugins as _plugins
@@ -128,6 +131,17 @@ def test_background_review_installs_thread_local_whitelist():
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist
     assert "skills_list" in whitelist
+    # selected OpenViking tools support self-evolution artifact reads/writes
+    assert "viking_archive" in whitelist
+    assert "viking_search" in whitelist
+    assert "viking_remember" in whitelist
+    assert "viking_write" in whitelist
+    assert "viking_sync_skills" in whitelist
+    assert "viking_system" in whitelist
+    # OpenViking admin/destructive maintenance tools stay out
+    assert "viking_admin" not in whitelist
+    assert "viking_reindex" not in whitelist
+    assert "viking_fs" not in whitelist
     # dangerous tools must NOT be in the whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
@@ -157,3 +171,27 @@ def test_background_review_agent_tools_are_limited():
     assert "delegate_task" not in expected_tools
     assert "web_search" not in expected_tools
     assert "execute_code" not in expected_tools
+
+
+def test_background_review_fork_marks_memory_provider_context():
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+
+    def _capture_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after capturing init args")
+
+    with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured["session_id"] == "sess-123"
+    assert captured["parent_session_id"] == "sess-123"
+    assert captured["memory_agent_context"] == "background_review"
+    assert captured["memory_capture_mode"] == "artifact_only"

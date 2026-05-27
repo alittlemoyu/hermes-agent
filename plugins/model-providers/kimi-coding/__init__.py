@@ -35,7 +35,11 @@ class KimiProfile(ProviderProfile):
             return extra_body, top_level
 
         # Enabled
-        extra_body["thinking"] = {"type": "enabled"}
+        thinking = {"type": "enabled"}
+        keep = reasoning_config.get("keep", reasoning_config.get("thinking_keep"))
+        if keep == "all":
+            thinking["keep"] = "all"
+        extra_body["thinking"] = thinking
         effort = (reasoning_config.get("effort") or "").strip().lower()
         if effort in {"low", "medium", "high"}:
             top_level["reasoning_effort"] = effort

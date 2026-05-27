@@ -38,6 +38,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import uuid
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -1570,23 +1571,23 @@ def _normalize_empty_agent_response(
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
             return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
+                "⚠️ 会话过大，超出模型的上下文窗口限制。\n"
+                "使用 /compact 压缩对话，或 "
+                "/reset 开始新的会话。"
             )
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
+            f"请求失败：{str(error_detail)[:300]}\n"
+            "请重试或使用 /reset 开始新的会话。"
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            return f"⚠️ 处理已停止：{str(err)[:200]}。请重试。"
         return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again."
+            "⚠️ 处理已完成，但未生成回复。"
+            "这可能是临时错误 — 请重新发送你的消息。"
         )
 
     return response
@@ -2253,21 +2254,20 @@ class GatewayRunner:
 
     def _telegram_topic_root_new_message(self) -> str:
         return (
-            "To start a new parallel Hermes chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
-            "Each topic is an independent Hermes session. Use /new inside an "
-            "existing topic only if you want to replace that topic's current session."
+            "要开启一个新的并行 Hermes 聊天，请打开此 bot 界面顶部的 All Messages 话题，"
+            "并在那里发送任意消息。Telegram 会为其创建一个新话题。\n\n"
+            "每个话题都是独立的 Hermes 会话。仅在现有话题中使用 /new，"
+            "如果你想替换该话题当前的会话。"
         )
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
             return None
         return (
-            "Started a new Hermes session in this topic.\n\n"
-            "Tip: for parallel work, open All Messages and send a message there "
-            "to create a separate topic instead of using /new here. /new replaces "
-            "the session attached to the current topic."
+            "已在此话题中启动新的 Hermes 会话。\n\n"
+            "提示：如需并行工作，请打开 All Messages 并在那里发送消息，"
+            "以创建另一个话题，而不是在这里使用 /new。/new 会替换"
+            "当前话题所关联的会话。"
         )
 
     def _record_telegram_topic_binding(
@@ -3364,12 +3364,12 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = "正在重启" if self._restart_requested else "正在关闭"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "你当前的任务将被中断。"
+            "重启后发送任意消息，我会尝试从上次中断的地方继续。"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "你当前的任务将被中断。"
         )
         msg = f"⚠️ Gateway {action} — {hint}"
 
@@ -6774,9 +6774,9 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
+                            f"嗨~ 我还不认识你哦！\n\n"
+                            f"这是你的配对码：`{code}`\n\n"
+                            f"请让 bot 主人运行：\n"
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
@@ -6784,8 +6784,7 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
+                            "配对请求太多了，请稍后再试~"
                         )
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
@@ -7069,7 +7068,7 @@ class GatewayRunner:
             if event.get_command() in {"queue", "q"}:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
-                    return "Usage: /queue <prompt>"
+                    return "用法：/queue <提示词>"
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     queued_event = MessageEvent(
@@ -7082,8 +7081,8 @@ class GatewayRunner:
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                    return "已加入队列，将在下一轮处理。"
+                return f"已加入队列。（当前队列深度：{depth}）"
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -7093,7 +7092,7 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "steer":
                 steer_text = event.get_command_args().strip()
                 if not steer_text:
-                    return "Usage: /steer <prompt>"
+                    return "用法：/steer <提示词>"
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
@@ -7107,17 +7106,17 @@ class GatewayRunner:
                             channel_prompt=event.channel_prompt,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
-                    return "Agent still starting — /steer queued for the next turn."
+                    return "Agent 正在启动中 — /steer 已加入队列，将在下一轮处理。"
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
                     except Exception as exc:
                         logger.warning("Steer failed for session %s: %s", _quick_key, exc)
-                        return f"⚠️ Steer failed: {exc}"
+                        return f"⚠️ Steer 失败：{exc}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
-                    return "Steer rejected (empty payload)."
+                        return f"⏩ Steer 已加入队列 — 将在下一次工具调用后生效：'{preview}'"
+                    return "Steer 被拒绝（空内容）。"
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -7129,17 +7128,16 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
-                return "No active agent — /steer queued for the next turn."
+                return "当前没有运行中的 Agent — /steer 已加入队列。"
 
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return "Agent 正在运行中 — 请先等待结束或执行 /stop，然后再切换模型。"
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
             if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+                return "Agent 正在运行中 — 请先等待结束或执行 /stop，然后再切换运行时。"
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -7178,7 +7176,7 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return "Agent 正在运行中 — 可使用 /goal status / pause / clear 管理当前目标，或先执行 /stop 再设置新目标。"
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7419,7 +7417,7 @@ class GatewayRunner:
                     message = hook_result.get("message")
                     if isinstance(message, str) and message:
                         return message
-                    return f"Command `/{command}` was blocked by a hook."
+                    return f"命令 `/{command}` 被 hook 拦截了。"
                 if decision == "handled":
                     message = hook_result.get("message")
                     return message if isinstance(message, str) and message else None
@@ -7446,8 +7444,7 @@ class GatewayRunner:
                 command="new",
                 title="/new",
                 detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
+                    "这将开启一个新的会话，并丢弃当前的对话历史。"
                 ),
                 execute=_do_reset,
             )
@@ -7577,7 +7574,7 @@ class GatewayRunner:
             # message. If the payload is empty, surface the usage hint.
             steer_payload = event.get_command_args().strip()
             if not steer_payload:
-                return "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+                return "用法：/steer <提示词>（当前没有运行中的 Agent，将作为普通消息发送）"
             try:
                 event.text = steer_payload
             except Exception:
@@ -7629,13 +7626,13 @@ class GatewayRunner:
                             if output:
                                 from agent.redact import redact_sensitive_text
                                 output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
+                            return output if output else "命令执行完毕，没有输出。"
                         except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
+                            return "快速命令执行超时（30秒）。"
                         except Exception as e:
-                            return f"Quick command error: {e}"
+                            return f"快速命令执行出错：{e}"
                     else:
-                        return f"Quick command '/{command}' has no command defined."
+                        return f"快速命令 '/{command}' 没有定义可执行的命令。"
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -7646,9 +7643,9 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         # Fall through to normal command dispatch below
                     else:
-                        return f"Quick command '/{command}' has no target defined."
+                        return f"快速命令 '/{command}' 没有设置目标命令。"
                 else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+                    return f"快速命令 '/{command}' 类型不支持（仅支持 'exec' 和 'alias'）。"
 
         # Plugin-registered slash commands
         if command:
@@ -9102,9 +9099,9 @@ class GatewayRunner:
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
-                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+                status_hint = " 请检查你的 API key，或运行 `claude /login` 刷新 OAuth 凭据。"
             elif status_code == 402:
-                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
+                status_hint = " 你的 API 余额或配额已用完。请查看提供方仪表板。"
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -9121,30 +9118,30 @@ class GatewayRunner:
                     if _resets_in and _resets_in > 0:
                         import math
                         _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                        status_hint = f" 你的套餐使用限制已达上限。将在约 {_hours} 小时后重置。"
                     else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                        status_hint = " 你的套餐使用限制已达上限。请等待重置。"
                 else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
+                    status_hint = " 你正在被限速。请稍等片刻后重试。"
             elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
+                status_hint = " API 暂时过载。请稍后重试。"
             elif status_code in {400, 500}:
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ 会话过大，超出模型的上下文窗口限制。\n"
+                        "使用 /compact 压缩对话，或 "
+                        "/reset 开始新的会话。"
                     )
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
+                    status_hint = " 请求被 API 拒绝。"
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
+                f"抱歉，我遇到了一个错误（{error_type}）。\n"
                 f"{error_detail}\n"
                 f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                "请重试或使用 /reset 开始新的会话。"
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -9889,44 +9886,44 @@ class GatewayRunner:
 
         if action in {"pause", "resume"}:
             if not target:
-                return f"Usage: /platform {action} <name>"
+                return f"用法：/platform {action} <名称>"
             platform = _resolve_platform(target)
             if platform is None:
-                return f"Unknown platform: {target}"
+                return f"未知平台：{target}"
             failed = getattr(self, "_failed_platforms", {}) or {}
             if action == "pause":
                 if platform not in failed:
                     return (
-                        f"{platform.value} is not in the retry queue "
-                        f"(it's either connected or not enabled)."
+                        f"{platform.value} 不在重试队列中 "
+                        f"（它要么已连接，要么未启用）。"
                     )
                 if failed[platform].get("paused"):
-                    return f"{platform.value} is already paused."
+                    return f"{platform.value} 已暂停。"
                 self._pause_failed_platform(platform, reason="paused via /platform pause")
                 return (
-                    f"✓ {platform.value} paused. "
-                    f"Resume with `/platform resume {platform.value}` or "
-                    f"`hermes gateway restart` to reset."
+                    f"✓ {platform.value} 已暂停。"
+                    f"使用 `/platform resume {platform.value}` 恢复，或 "
+                    f"运行 `hermes gateway restart` 重置。"
                 )
             # action == "resume"
             if platform not in failed:
                 return (
-                    f"{platform.value} is not in the retry queue — "
-                    f"nothing to resume."
+                    f"{platform.value} 不在重试队列中 — "
+                    f"没有可恢复的内容。"
                 )
             if not failed[platform].get("paused"):
                 return (
-                    f"{platform.value} is already retrying — "
-                    f"no resume needed."
+                    f"{platform.value} 已在重试中 — "
+                    f"无需恢复。"
                 )
             self._resume_paused_platform(platform)
-            return f"✓ {platform.value} resumed — retrying on next watcher tick."
+            return f"✓ {platform.value} 已恢复 — 将在下一次 watcher tick 时重试。"
 
         return (
-            "Usage: /platform <list|pause|resume> [name]\n"
-            "  /platform list — show platform status\n"
-            "  /platform pause <name> — stop retrying a failing platform\n"
-            "  /platform resume <name> — re-queue a paused platform"
+            "用法：/platform <list|pause|resume> [名称]\n"
+            "  /platform list — 显示平台状态\n"
+            "  /platform pause <名称> — 停止重试失败的平台\n"
+            "  /platform resume <名称> — 重新将暂停的平台加入队列"
         )
 
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
@@ -10800,7 +10797,7 @@ class GatewayRunner:
         if mgr is None:
             return t("gateway.goal.unavailable")
         if not mgr.has_goal():
-            return "No active goal. Set one with /goal <text>."
+            return "当前没有活跃目标。使用 /goal <文本> 来设置一个。"
 
         # No args → list current subgoals.
         if not args:
@@ -10812,32 +10809,32 @@ class GatewayRunner:
 
         if verb == "remove":
             if not rest:
-                return "Usage: /subgoal remove <n>"
+                return "用法：/subgoal remove <序号>"
             try:
                 idx = int(rest.split()[0])
             except ValueError:
-                return "/subgoal remove: <n> must be an integer (1-based index)."
+                return "/subgoal remove：<序号> 必须是整数（从1开始）。"
             try:
                 removed = mgr.remove_subgoal(idx)
             except (IndexError, RuntimeError) as exc:
-                return f"/subgoal remove: {exc}"
-            return f"✓ Removed subgoal {idx}: {removed}"
+                return f"/subgoal remove：{exc}"
+            return f"✓ 已移除子目标 {idx}：{removed}"
 
         if verb == "clear":
             try:
                 prev = mgr.clear_subgoals()
             except RuntimeError as exc:
-                return f"/subgoal clear: {exc}"
+                return f"/subgoal clear：{exc}"
             if prev:
-                return f"✓ Cleared {prev} subgoal{'s' if prev != 1 else ''}."
-            return "No subgoals to clear."
+                return f"✓ 已清空 {prev} 个子目标。"
+            return "没有子目标可清空。"
 
         try:
             text = mgr.add_subgoal(args)
         except (ValueError, RuntimeError) as exc:
-            return f"/subgoal: {exc}"
+            return f"/subgoal：{exc}"
         idx = len(mgr.state.subgoals) if mgr.state else 0
-        return f"✓ Added subgoal {idx}: {text}"
+        return f"✓ 已添加子目标 {idx}：{text}"
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
@@ -11120,17 +11117,17 @@ class GatewayRunner:
         """Join the user's current Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
         if not hasattr(adapter, "join_voice_channel"):
-            return "Voice channels are not supported on this platform."
+            return "当前平台不支持语音频道。"
 
         guild_id = self._get_guild_id(event)
         if not guild_id:
-            return "This command only works in a Discord server."
+            return "此命令仅在 Discord 服务器中可用。"
 
         voice_channel = await adapter.get_user_voice_channel(
             guild_id, event.source.user_id
         )
         if not voice_channel:
-            return "You need to be in a voice channel first."
+            return "你需要先加入一个语音频道。"
 
         # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
@@ -11147,10 +11144,10 @@ class GatewayRunner:
             err_lower = str(e).lower()
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
-                    "Voice dependencies are missing (PyNaCl / davey). "
-                    f"Install with: `{sys.executable} -m pip install PyNaCl`"
+                    "语音依赖缺失（PyNaCl / davey）。"
+                    f"请运行：`{sys.executable} -m pip install PyNaCl`"
                 )
-            return f"Failed to join voice channel: {e}"
+            return f"加入语音频道失败：{e}"
 
         if success:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
@@ -11160,12 +11157,12 @@ class GatewayRunner:
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
-                f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+                f"已加入语音频道 **{voice_channel.name}**。\n"
+                f"我会播报回复并聆听你说话。使用 /voice leave 断开连接。"
             )
         # Join failed — clear callback
         adapter._voice_input_callback = None
-        return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+        return "加入语音频道失败。请检查 bot 权限（Connect + Speak）。"
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
@@ -11173,10 +11170,10 @@ class GatewayRunner:
         guild_id = self._get_guild_id(event)
 
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
-            return "Not in a voice channel."
+            return "当前不在语音频道中。"
 
         if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
-            return "Not in a voice channel."
+            return "当前不在语音频道中。"
 
         try:
             await adapter.leave_voice_channel(guild_id)
@@ -11188,7 +11185,7 @@ class GatewayRunner:
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
-        return "Left voice channel."
+        return "已离开语音频道。"
 
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
         """Called by the adapter when a voice channel times out.
@@ -12583,7 +12580,7 @@ class GatewayRunner:
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
         chat_id = str(source.chat_id or "")
         if not chat_id:
-            return "Could not determine chat ID."
+            return "无法确定聊天 ID。"
         # No-op if never enabled.
         try:
             currently_enabled = self._session_db.is_telegram_topic_mode_enabled(
@@ -12593,12 +12590,12 @@ class GatewayRunner:
         except Exception:
             currently_enabled = False
         if not currently_enabled:
-            return "Multi-session topic mode is not currently enabled for this chat."
+            return "当前聊天未启用多会话主题模式。"
         try:
             self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
-            return f"Failed to disable topic mode: {exc}"
+            return f"禁用主题模式失败：{exc}"
         # Reset per-chat debounce state so the user doesn't see a stale
         # cooldown on the next activation.
         for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
@@ -12752,15 +12749,15 @@ class GatewayRunner:
         source = event.source
         session_id = self._session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
-            return f"Session not found: {raw_session_id.strip()}"
+            return f"未找到会话：{raw_session_id.strip()}"
 
         session = self._session_db.get_session(session_id)
         if not session:
-            return f"Session not found: {raw_session_id.strip()}"
+            return f"未找到会话：{raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
-            return "That session is not a Telegram session and cannot be restored into this topic."
+            return "该会话不是 Telegram 会话，无法恢复到此主题。"
         if str(session.get("user_id") or "") != str(source.user_id):
-            return "That session does not belong to this Telegram user."
+            return "该会话不属于此 Telegram 用户。"
 
         linked = self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
         current_binding = self._session_db.get_telegram_topic_binding(
@@ -13596,7 +13593,7 @@ class GatewayRunner:
 
         async def _on_confirm(choice: str):
             if choice == "cancel":
-                return f"🟡 /{command} cancelled. Conversation unchanged."
+                return f"🟡 /{command} 已取消。当前会话未更改。"
             if choice == "always":
                 try:
                     from cli import save_config_value
@@ -13612,9 +13609,9 @@ class GatewayRunner:
             result = await execute()
             if choice == "always":
                 note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
+                    "\n\nℹ️ 后续的 /clear、/new、/reset 和 /undo 将直接执行，"
+                    "不再确认。可在 config.yaml 中设置 "
+                    "`approvals.destructive_slash_confirm: true` 重新启用确认。"
                 )
                 if isinstance(result, str):
                     return result + note
@@ -13625,13 +13622,13 @@ class GatewayRunner:
             return result
 
         prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
+            f"⚠️ **确认 /{command}**\n\n"
             f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+            "请选择：\n"
+            "• **仅批准一次** — 仅本次执行\n"
+            "• **始终批准** — 执行并永久静默此提示\n"
+            "• **取消** — 保留当前会话\n\n"
+            "_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
         )
         return await self._request_slash_confirm(
             event=event,
@@ -13729,12 +13726,20 @@ class GatewayRunner:
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         thread_id = getattr(source, "thread_id", None)
-        if thread_id is None:
+        run_id = getattr(source, "_hermes_run_id", None)
+        if thread_id is None and not (
+            getattr(source, "platform", None) == Platform.WEIXIN and run_id
+        ):
             return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
+        metadata: Dict[str, Any] = {}
+        if thread_id is not None:
+            metadata["thread_id"] = thread_id
+        if getattr(source, "platform", None) == Platform.WEIXIN and run_id:
+            metadata["run_id"] = run_id
         if (
             getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"
+            and thread_id is not None
         ):
             metadata["telegram_dm_topic_reply_fallback"] = True
             # Telegram DM topic lanes need direct_messages_topic_id in metadata
@@ -15799,6 +15804,7 @@ class GatewayRunner:
             )
 
         from run_agent import AIAgent
+        from gateway.config import Platform
         import queue
 
         def _run_still_current() -> bool:
@@ -15808,6 +15814,8 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        if source.platform == Platform.WEIXIN and not getattr(source, "_hermes_run_id", None):
+            setattr(source, "_hermes_run_id", f"hermes-weixin-{uuid.uuid4().hex}")
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -15856,7 +15864,6 @@ class GatewayRunner:
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
-        from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
@@ -15896,11 +15903,69 @@ class GatewayRunner:
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        _weixin_progress_lock = threading.Lock()
+        _weixin_progress_seq = [0]
+        _weixin_active_tool_ids: Dict[str, List[str]] = {}
+
+        def _schedule_weixin_tool_progress(
+            event_type: str,
+            tool_name: Optional[str],
+            *,
+            is_error: Optional[bool] = None,
+        ) -> None:
+            if source.platform != Platform.WEIXIN or not tool_name or not _run_still_current():
+                return
+            adapter = self.adapters.get(source.platform)
+            send_tool_progress = getattr(adapter, "send_tool_progress", None)
+            if not callable(send_tool_progress):
+                return
+            if not getattr(adapter, "_reply_progress_messages", True):
+                return
+
+            run_id = getattr(source, "_hermes_run_id", None) or f"hermes-weixin-{uuid.uuid4().hex}"
+            setattr(source, "_hermes_run_id", run_id)
+            phase = None
+            status = None
+            with _weixin_progress_lock:
+                if event_type == "tool.started":
+                    phase = "start"
+                    _weixin_progress_seq[0] += 1
+                    tool_call_id = f"{run_id}:{_weixin_progress_seq[0]}"
+                    _weixin_active_tool_ids.setdefault(tool_name, []).append(tool_call_id)
+                elif event_type == "tool.completed":
+                    phase = "end"
+                    ids = _weixin_active_tool_ids.get(tool_name) or []
+                    tool_call_id = ids.pop(0) if ids else f"{run_id}:{tool_name}"
+                    if not ids:
+                        _weixin_active_tool_ids.pop(tool_name, None)
+                    status = "failed" if is_error else "completed"
+                else:
+                    return
+
+            safe_schedule_threadsafe(
+                send_tool_progress(
+                    source.chat_id,
+                    phase=phase,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    status=status,
+                    run_id=run_id,
+                    metadata=_status_thread_metadata,
+                ),
+                _loop_for_step,
+                logger=logger,
+                log_message="weixin tool progress scheduling error",
+            )
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
                 return
+            _schedule_weixin_tool_progress(
+                event_type,
+                tool_name,
+                is_error=kwargs.get("is_error"),
+            )
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -16021,11 +16086,16 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = (
-            self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
-            else {"thread_id": _progress_thread_id}
-        ) if _progress_thread_id else None
+        if _progress_thread_id:
+            _progress_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if _progress_thread_id == source.thread_id
+                else {"thread_id": _progress_thread_id}
+            )
+        elif source.platform == Platform.WEIXIN:
+            _progress_metadata = self._thread_metadata_for_source(source, event_message_id)
+        else:
+            _progress_metadata = None
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
@@ -16410,7 +16480,11 @@ class GatewayRunner:
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if (_progress_thread_id or source.platform == Platform.WEIXIN)
+                else None
+            )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

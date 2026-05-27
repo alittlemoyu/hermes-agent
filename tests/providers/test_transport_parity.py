@@ -89,6 +89,17 @@ class TestKimiParity:
         )
         assert kw["extra_body"]["thinking"] == {"type": "enabled"}
 
+    def test_thinking_keep_all(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("kimi-coding"),
+            reasoning_config={"enabled": True, "effort": "high", "keep": "all"},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled", "keep": "all"}
+        assert kw["reasoning_effort"] == "high"
+
     def test_thinking_disabled(self, transport):
         kw = transport.build_kwargs(
             model="kimi-k2",

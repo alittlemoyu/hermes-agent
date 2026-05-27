@@ -26,11 +26,12 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "rev": None}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = check_for_updates()
+    with patch("hermes_cli.banner._update_cache_identity", return_value={"rev": None}):
+        with patch("hermes_cli.banner.subprocess.run") as mock_run:
+            result = check_for_updates()
 
     assert result == 3
     mock_run.assert_not_called()
@@ -51,11 +52,50 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
-        result = check_for_updates()
+    with patch("hermes_cli.banner._update_cache_identity", return_value={"rev": None}):
+        with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+            result = check_for_updates()
 
     assert result == 5
     assert mock_run.call_count == 2  # git fetch + git rev-list
+
+
+def test_check_for_updates_invalidates_cache_when_git_head_changes(tmp_path, monkeypatch):
+    """Manual git resets should invalidate the six-hour update cache."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({
+        "ts": time.time(),
+        "behind": 270,
+        "rev": None,
+        "repo_head": "old-head",
+        "origin_head": "origin-head",
+    }))
+
+    identities = [
+        {"rev": None, "repo_head": "new-head", "origin_head": "origin-head"},
+        {"rev": None, "repo_head": "new-head", "origin_head": "origin-head"},
+    ]
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner._update_cache_identity", side_effect=identities):
+        with patch("hermes_cli.banner._check_via_local_git", return_value=4) as mock_check:
+            result = banner.check_for_updates()
+
+    assert result == 4
+    mock_check.assert_called_once_with(repo_dir)
+    cached = json.loads(cache_file.read_text())
+    assert cached["behind"] == 4
+    assert cached["repo_head"] == "new-head"
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
@@ -74,6 +114,34 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
             result = banner.check_for_updates()
     assert result == 0
     mock_run.assert_not_called()
+
+
+def test_update_scope_breakdown_counts_openviking_commits(tmp_path):
+    """Display helper separates OpenViking-touching commits from other updates."""
+    from hermes_cli.banner import count_update_commits_by_scope, format_update_scope_breakdown
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["git", "rev-list"]:
+            return MagicMock(returncode=0, stdout="a\nb\nc\n")
+        if cmd[:2] == ["git", "diff-tree"]:
+            commit = cmd[-1]
+            paths = {
+                "a": "plugins/memory/openviking/__init__.py\n",
+                "b": "README.md\n",
+                "c": "tests/openviking_plugin/test_openviking.py\n",
+            }
+            return MagicMock(returncode=0, stdout=paths[commit])
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        breakdown = count_update_commits_by_scope(repo_dir)
+        suffix = format_update_scope_breakdown(repo_dir, 3)
+
+    assert breakdown == {"total": 3, "openviking": 2, "other": 1}
+    assert suffix == " (2 OpenViking, 1 other)"
 
 
 def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):

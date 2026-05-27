@@ -4168,6 +4168,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     value="Pick one below, or click ✏️ Other to type a custom answer.",
                     inline=False,
                 )
+                for idx, choice in enumerate(clean_choices, start=1):
+                    lines = str(choice).splitlines()
+                    title = (lines[0] if lines else str(choice)).strip()
+                    detail = "\n".join(line.strip() for line in lines[1:] if line.strip())
+                    embed.add_field(
+                        name=f"{idx}. {title[:240]}",
+                        value=(detail or "No additional details.")[:1024],
+                        inline=False,
+                    )
                 view = ClarifyChoiceView(
                     choices=clean_choices,
                     clarify_id=clarify_id,
@@ -5549,7 +5558,8 @@ def _define_discord_view_classes() -> None:
 
             for index, choice in enumerate(self.choices):
                 # Discord button labels are capped at 80 chars.
-                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
+                label_source = str(choice).splitlines()[0].strip()
+                label_body = label_source if len(label_source) <= 75 else label_source[:72] + "..."
                 button = discord.ui.Button(
                     label=f"{index + 1}. {label_body}",
                     style=discord.ButtonStyle.primary,
