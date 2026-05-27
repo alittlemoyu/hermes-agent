@@ -1,7 +1,7 @@
 """Tests for the ``_codex_silent_hang_hint`` heuristic.
 
 The helper substitutes an actionable hint into the stale-call timeout
-warning when the request matches a known Codex silent-reject pattern
+warning when the request matches a known Codex no-first-byte pattern
 (gpt-5.5 family on the ChatGPT Codex backend).  See issue #21444 for
 symptom history. The recommended workaround for ChatGPT Codex OAuth
 accounts is `gpt-5.4` / `gpt-5.3-codex`, not `gpt-5.4-codex`.
