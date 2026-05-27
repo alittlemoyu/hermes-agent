@@ -38,6 +38,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import uuid
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -14449,13 +14450,20 @@ class GatewayRunner:
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
+        # Weixin structured tool progress needs run_id even when thread_id is None.
+        run_id = getattr(source, "_hermes_run_id", None)
+        if metadata is None and getattr(source, "platform", None) == Platform.WEIXIN and run_id:
+            metadata = {"run_id": run_id}
+        elif getattr(source, "platform", None) == Platform.WEIXIN and run_id:
+            metadata["run_id"] = run_id
+        return metadata
 
     def _thread_metadata_for_target(
         self,
@@ -16678,6 +16686,7 @@ class GatewayRunner:
             )
 
         from run_agent import AIAgent
+        from gateway.config import Platform
         import queue
 
         def _run_still_current() -> bool:
@@ -16687,6 +16696,8 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        if source.platform == Platform.WEIXIN and not getattr(source, "_hermes_run_id", None):
+            setattr(source, "_hermes_run_id", f"hermes-weixin-{uuid.uuid4().hex}")
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -16735,7 +16746,6 @@ class GatewayRunner:
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
-        from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
@@ -16779,11 +16789,69 @@ class GatewayRunner:
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+        _weixin_progress_lock = threading.Lock()
+        _weixin_progress_seq = [0]
+        _weixin_active_tool_ids: Dict[str, List[str]] = {}
+
+        def _schedule_weixin_tool_progress(
+            event_type: str,
+            tool_name: Optional[str],
+            *,
+            is_error: Optional[bool] = None,
+        ) -> None:
+            if source.platform != Platform.WEIXIN or not tool_name or not _run_still_current():
+                return
+            adapter = self.adapters.get(source.platform)
+            send_tool_progress = getattr(adapter, "send_tool_progress", None)
+            if not callable(send_tool_progress):
+                return
+            if not getattr(adapter, "_reply_progress_messages", True):
+                return
+
+            run_id = getattr(source, "_hermes_run_id", None) or f"hermes-weixin-{uuid.uuid4().hex}"
+            setattr(source, "_hermes_run_id", run_id)
+            phase = None
+            status = None
+            with _weixin_progress_lock:
+                if event_type == "tool.started":
+                    phase = "start"
+                    _weixin_progress_seq[0] += 1
+                    tool_call_id = f"{run_id}:{_weixin_progress_seq[0]}"
+                    _weixin_active_tool_ids.setdefault(tool_name, []).append(tool_call_id)
+                elif event_type == "tool.completed":
+                    phase = "end"
+                    ids = _weixin_active_tool_ids.get(tool_name) or []
+                    tool_call_id = ids.pop(0) if ids else f"{run_id}:{tool_name}"
+                    if not ids:
+                        _weixin_active_tool_ids.pop(tool_name, None)
+                    status = "failed" if is_error else "completed"
+                else:
+                    return
+
+            safe_schedule_threadsafe(
+                send_tool_progress(
+                    source.chat_id,
+                    phase=phase,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    status=status,
+                    run_id=run_id,
+                    metadata=_status_thread_metadata,
+                ),
+                _loop_for_step,
+                logger=logger,
+                log_message="weixin tool progress scheduling error",
+            )
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
                 return
+            _schedule_weixin_tool_progress(
+                event_type,
+                tool_name,
+                is_error=kwargs.get("is_error"),
+            )
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -16904,11 +16972,16 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = (
-            self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
-            else {"thread_id": _progress_thread_id}
-        ) if _progress_thread_id else None
+        if _progress_thread_id:
+            _progress_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if _progress_thread_id == source.thread_id
+                else {"thread_id": _progress_thread_id}
+            )
+        elif source.platform == Platform.WEIXIN:
+            _progress_metadata = self._thread_metadata_for_source(source, event_message_id)
+        else:
+            _progress_metadata = None
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
@@ -17293,7 +17366,11 @@ class GatewayRunner:
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if (_progress_thread_id or source.platform == Platform.WEIXIN)
+                else None
+            )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
