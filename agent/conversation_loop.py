@@ -2880,6 +2880,25 @@ def run_conversation(
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
                 )
+                if (
+                    is_local_validation_error
+                    and agent.api_mode == "codex_responses"
+                    and (agent.provider or "") == "openai-codex"
+                    and isinstance(api_error, TypeError)
+                    and "'NoneType' object is not iterable" in str(api_error)
+                ):
+                    # chatgpt.com/backend-api/codex can surface empty/aborted
+                    # stream state from the SDK as a bare TypeError. Treat it
+                    # like a transport hiccup so the retry/fallback policy gets
+                    # a chance instead of mislabeling it as a local validation
+                    # bug with HTTP None.
+                    logger.warning(
+                        "Codex Responses surfaced bare NoneType iterable error; "
+                        "treating as retryable transport failure. %s",
+                        agent._client_log_context(),
+                        exc_info=api_error,
+                    )
+                    is_local_validation_error = False
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
                 #   • credential-pool rotation (line ~2031) has already

@@ -10,6 +10,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.codex_runtime import _patch_codex_completed_output_none
 
 
 @pytest.fixture(autouse=True)
@@ -155,9 +156,11 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None, iter_error=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
+        self._iter_error = iter_error
 
     def __enter__(self):
         return self
@@ -166,7 +169,10 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        for event in self._events:
+            yield event
+        if self._iter_error is not None:
+            raise self._iter_error
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -537,6 +543,51 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
     assert calls["stream"] == 1
     assert response.output == [output_item]
     assert response.status == "completed"
+
+
+def test_run_codex_stream_recovers_text_delta_when_completed_output_is_none(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.output_text.delta", delta="hello"),
+                    SimpleNamespace(type="response.output_text.delta", delta=" world"),
+                ],
+                iter_error=TypeError("'NoneType' object is not iterable"),
+            ),
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "hello world"
+
+
+def test_codex_completed_output_none_patch_preserves_usage():
+    class FakeState:
+        def __init__(self):
+            self.seen_response = None
+
+        def handle_event(self, event):
+            self.seen_response = event.response
+            return [event]
+
+    state = FakeState()
+    stream = SimpleNamespace(_state=state)
+    response = SimpleNamespace(
+        output=None,
+        usage=SimpleNamespace(input_tokens=123, output_tokens=45, total_tokens=168),
+    )
+    event = SimpleNamespace(type="response.completed", response=response)
+
+    _patch_codex_completed_output_none(stream)
+    yielded = state.handle_event(event)
+
+    assert yielded == [event]
+    assert state.seen_response.output == []
+    assert state.seen_response.usage.total_tokens == 168
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

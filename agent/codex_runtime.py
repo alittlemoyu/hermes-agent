@@ -26,6 +26,44 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _patch_codex_completed_output_none(stream: Any) -> None:
+    """Tolerate ChatGPT Codex completed events with ``response.output=None``.
+
+    The OpenAI SDK parses ``response.completed`` by iterating
+    ``event.response.output`` before yielding the event.  The ChatGPT Codex
+    backend can send ``output: null`` there even after streaming valid
+    ``response.output_item.done`` events, which crashes the SDK and discards
+    usage metadata.  Normalize only that one backend quirk so the SDK can
+    finish building a response with its original ``usage`` attached; callers
+    can then backfill the empty output list from streamed items.
+    """
+    state = getattr(stream, "_state", None)
+    handle_event = getattr(state, "handle_event", None)
+    if state is None or not callable(handle_event):
+        return
+    if getattr(state, "_hermes_codex_output_none_patch", False):
+        return
+
+    def _handle_event(event: Any):
+        if getattr(event, "type", None) == "response.completed":
+            response = getattr(event, "response", None)
+            if response is not None and getattr(response, "output", None) is None:
+                try:
+                    response.output = []
+                except Exception:
+                    try:
+                        object.__setattr__(response, "output", [])
+                    except Exception:
+                        pass
+        return handle_event(event)
+
+    try:
+        state.handle_event = _handle_event
+        state._hermes_codex_output_none_patch = True
+    except Exception:
+        logger.debug("Codex stream: failed to install output=None compatibility patch", exc_info=True)
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -225,6 +263,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         collected_output_items: list = []
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
+                _patch_codex_completed_output_none(stream)
                 for event in stream:
                     # Mark stream activity for the TTFB watchdog in
                     # interruptible_api_call. The Codex backend can accept the
@@ -323,11 +362,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     model=api_kwargs.get("model"),
                 )
                 if recovered is not None:
-                    logger.debug(
+                    logger.warning(
                         "Codex Responses stream parser hit response.output=None; "
-                        "recovered from streamed events (items=%d, text_parts=%d). %s",
+                        "recovered from streamed events (items=%d, text_chars=%d). %s",
                         len(collected_output_items),
-                        len(agent._codex_streamed_text_parts),
+                        sum(len(p) for p in agent._codex_streamed_text_parts),
                         agent._client_log_context(),
                     )
                     return recovered

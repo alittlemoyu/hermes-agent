@@ -824,6 +824,32 @@ class _CodexCompletionsAdapter:
             _check_cancelled()
             final = None
             with self._client.responses.stream(**resp_kwargs) as stream:
+                state = getattr(stream, "_state", None)
+                handle_event = getattr(state, "handle_event", None)
+                if state is not None and callable(handle_event) and not getattr(
+                    state, "_hermes_codex_output_none_patch", False
+                ):
+                    def _handle_event(event: Any):
+                        if getattr(event, "type", None) == "response.completed":
+                            response = getattr(event, "response", None)
+                            if response is not None and getattr(response, "output", None) is None:
+                                try:
+                                    response.output = []
+                                except Exception:
+                                    try:
+                                        object.__setattr__(response, "output", [])
+                                    except Exception:
+                                        pass
+                        return handle_event(event)
+
+                    try:
+                        state.handle_event = _handle_event
+                        state._hermes_codex_output_none_patch = True
+                    except Exception:
+                        logger.debug(
+                            "Codex auxiliary: failed to install output=None compatibility patch",
+                            exc_info=True,
+                        )
                 try:
                     for _event in stream:
                         _check_cancelled()
@@ -912,6 +938,54 @@ class _CodexCompletionsAdapter:
                     completion_tokens=getattr(resp_usage, "output_tokens", 0),
                     total_tokens=getattr(resp_usage, "total_tokens", 0),
                 )
+        except TypeError as exc:
+            if "'NoneType' object is not iterable" not in str(exc):
+                raise
+            if not collected_output_items and not (collected_text_deltas and not has_function_calls):
+                logger.debug(
+                    "Codex auxiliary hit SDK response.completed output=None parser "
+                    "error with no recoverable prior stream events"
+                )
+                raise
+            logger.warning(
+                "Codex auxiliary recovered from SDK response.completed output=None "
+                "parser error using prior stream events (items=%d, text_chars=%d)",
+                len(collected_output_items),
+                sum(len(p) for p in collected_text_deltas),
+            )
+            recovered_output = list(collected_output_items)
+            if not recovered_output and collected_text_deltas and not has_function_calls:
+                recovered_output = [SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(
+                        type="output_text",
+                        text="".join(collected_text_deltas),
+                    )],
+                )]
+            final = SimpleNamespace(output=recovered_output, usage=None)
+
+            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+                val = getattr(obj, key, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(key, default)
+                return val if val is not None else default
+
+            for item in getattr(final, "output", []):
+                item_type = _item_get(item, "type")
+                if item_type == "message":
+                    for part in (_item_get(item, "content") or []):
+                        ptype = _item_get(part, "type")
+                        if ptype in {"output_text", "text"}:
+                            text_parts.append(_item_get(part, "text", ""))
+                elif item_type == "function_call":
+                    tool_calls_raw.append(SimpleNamespace(
+                        id=_item_get(item, "call_id", ""),
+                        type="function",
+                        function=SimpleNamespace(
+                            name=_item_get(item, "name", ""),
+                            arguments=_item_get(item, "arguments", "{}"),
+                        ),
+                    ))
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc

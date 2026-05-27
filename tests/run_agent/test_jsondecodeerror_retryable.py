@@ -21,17 +21,31 @@ from __future__ import annotations
 import json
 
 
-def _mirror_agent_predicate(err: BaseException) -> bool:
+def _mirror_agent_predicate(
+    err: BaseException,
+    *,
+    api_mode: str = "chat_completions",
+    provider: str = "custom",
+) -> bool:
     """Exact shape of run_agent.py's is_local_validation_error check.
 
     Kept in lock-step with the source. If you change one, change both —
     or, better, refactor the check into a shared helper and have both
     sites import it.
     """
-    return (
+    is_local = (
         isinstance(err, (ValueError, TypeError))
         and not isinstance(err, (UnicodeEncodeError, json.JSONDecodeError))
     )
+    if (
+        is_local
+        and api_mode == "codex_responses"
+        and provider == "openai-codex"
+        and isinstance(err, TypeError)
+        and "'NoneType' object is not iterable" in str(err)
+    ):
+        return False
+    return is_local
 
 
 class TestJSONDecodeErrorIsRetryable:
@@ -65,6 +79,13 @@ class TestJSONDecodeErrorIsRetryable:
 
     def test_bare_type_error_is_local_validation(self):
         assert _mirror_agent_predicate(TypeError("wrong type"))
+
+    def test_codex_none_iterable_type_error_is_retryable(self):
+        assert not _mirror_agent_predicate(
+            TypeError("'NoneType' object is not iterable"),
+            api_mode="codex_responses",
+            provider="openai-codex",
+        )
 
 
 class TestAgentLoopSourceStillHasCarveOut:
