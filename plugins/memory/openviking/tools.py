@@ -28,6 +28,33 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+_LOCAL_CONTRACT_FIELDS = (
+    "when_to_use",
+    "when_not_to_use",
+    "required_before_call",
+    "next_action",
+    "dangerous_misroutes",
+    "write_policy",
+    "recovery_hint",
+)
+
+
+def _input_error(
+    message: str,
+    *,
+    required_before_call: list[str],
+    next_action: str,
+    recovery_hint: str,
+    error_code: str = "invalid_input",
+) -> str:
+    return tool_error(
+        message,
+        error_code=error_code,
+        required_before_call=required_before_call,
+        next_action=next_action,
+        recovery_hint=recovery_hint,
+    )
+
 
 class OpenVikingToolMixin:
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -35,50 +62,50 @@ class OpenVikingToolMixin:
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
-            return tool_error("OpenViking server not connected")
+            return self._attach_tool_contract(tool_name, tool_error("OpenViking server not connected"))
 
         try:
             if tool_name == "viking_search":
-                return self._tool_search(args)
+                return self._attach_tool_contract(tool_name, self._tool_search(args))
             elif tool_name == "viking_read":
-                return self._tool_read(args)
+                return self._attach_tool_contract(tool_name, self._tool_read(args))
             elif tool_name == "viking_browse":
-                return self._tool_browse(args)
+                return self._attach_tool_contract(tool_name, self._tool_browse(args))
             elif tool_name == "viking_fs":
-                return self._tool_fs(args)
+                return self._attach_tool_contract(tool_name, self._tool_fs(args))
             elif tool_name == "viking_remember":
-                return self._tool_remember(args)
+                return self._attach_tool_contract(tool_name, self._tool_remember(args))
             elif tool_name == "viking_write":
-                return self._tool_write(args)
+                return self._attach_tool_contract(tool_name, self._tool_write(args))
             elif tool_name == "viking_link":
-                return self._tool_link(args)
+                return self._attach_tool_contract(tool_name, self._tool_link(args))
             elif tool_name == "viking_relations":
-                return self._tool_relations(args)
+                return self._attach_tool_contract(tool_name, self._tool_relations(args))
             elif tool_name == "viking_find":
-                return self._tool_find(args)
+                return self._attach_tool_contract(tool_name, self._tool_find(args))
             elif tool_name == "viking_grep":
-                return self._tool_grep(args)
+                return self._attach_tool_contract(tool_name, self._tool_grep(args))
             elif tool_name == "viking_glob":
-                return self._tool_glob(args)
+                return self._attach_tool_contract(tool_name, self._tool_glob(args))
             elif tool_name == "viking_add_resource":
-                return self._tool_add_resource(args)
+                return self._attach_tool_contract(tool_name, self._tool_add_resource(args))
             elif tool_name == "viking_archive":
-                return self._tool_archive(args)
+                return self._attach_tool_contract(tool_name, self._tool_archive(args))
             elif tool_name == "viking_add_skill":
-                return self._tool_add_skill(args)
+                return self._attach_tool_contract(tool_name, self._tool_add_skill(args))
             elif tool_name == "viking_sync_skills":
-                return self._tool_sync_skills(args)
+                return self._attach_tool_contract(tool_name, self._tool_sync_skills(args))
             elif tool_name == "viking_system":
-                return self._tool_system(args)
+                return self._attach_tool_contract(tool_name, self._tool_system(args))
             elif tool_name == "viking_admin":
-                return self._tool_admin(args)
+                return self._attach_tool_contract(tool_name, self._tool_admin(args))
             elif tool_name == "viking_consistency":
-                return self._tool_consistency(args)
+                return self._attach_tool_contract(tool_name, self._tool_consistency(args))
             elif tool_name == "viking_reindex":
-                return self._tool_reindex(args)
+                return self._attach_tool_contract(tool_name, self._tool_reindex(args))
             return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
-            return tool_error(str(e))
+            return self._attach_tool_contract(tool_name, tool_error(str(e)))
 
     def shutdown(self) -> None:
         # Wait for background threads to finish
@@ -98,6 +125,24 @@ class OpenVikingToolMixin:
         if isinstance(resp, dict) and "result" in resp:
             return resp.get("result")
         return resp
+
+    def _attach_tool_contract(self, tool_name: str, raw: str) -> str:
+        schemas = {schema.get("name"): schema for schema in self.get_tool_schemas()}
+        schema = schemas.get(tool_name)
+        if not schema:
+            return raw
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return raw
+        if not isinstance(payload, dict):
+            return raw
+        contract = {field: schema.get(field) for field in _LOCAL_CONTRACT_FIELDS if schema.get(field)}
+        if contract:
+            payload.setdefault("tool_contract", contract)
+            payload.setdefault("write_policy", contract.get("write_policy"))
+            payload.setdefault("recovery_hint", contract.get("recovery_hint"))
+        return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod
     def _normalize_summary_uri(uri: str) -> str:
@@ -135,12 +180,24 @@ class OpenVikingToolMixin:
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
-            return tool_error("query is required")
+            return _input_error(
+                "query is required",
+                required_before_call=["query"],
+                next_action="Call viking_search with a semantic query, or use viking_glob for path matching.",
+                recovery_hint="OpenViking search is recall-only; confirm structured facts through factmemory before writes.",
+                error_code="missing_query",
+            )
 
         payload: Dict[str, Any] = {"query": query}
         strategy = args.get("strategy", "find")
         if strategy not in ("find", "search"):
-            return tool_error("strategy must be 'find' or 'search'")
+            return _input_error(
+                "strategy must be 'find' or 'search'",
+                required_before_call=["strategy omitted, 'find', or 'search'"],
+                next_action="Use strategy='find' for simple recall or strategy='search' for session-aware rerank.",
+                recovery_hint="Do not invent other strategy values; use mode/level/scope to tune retrieval.",
+                error_code="invalid_strategy",
+            )
         mode = args.get("mode", "auto")
         if strategy == "find" and mode != "auto":
             payload["mode"] = mode
@@ -366,7 +423,13 @@ class OpenVikingToolMixin:
     def _tool_read(self, args: dict) -> str:
         uri = args.get("uri", "")
         if not uri:
-            return tool_error("uri is required")
+            return _input_error(
+                "uri is required",
+                required_before_call=["viking:// uri from viking_search/browse/glob"],
+                next_action="Find a URI with viking_search, viking_browse, or viking_glob, then call viking_read.",
+                recovery_hint="Use document_read for registered document doc_id reads; use viking_read for raw viking:// URIs.",
+                error_code="missing_uri",
+            )
 
         level = args.get("level", "overview")
 
@@ -488,7 +551,13 @@ class OpenVikingToolMixin:
         if action == "mkdir":
             uri = args.get("uri", "")
             if not uri:
-                return tool_error("uri is required for mkdir")
+                return _input_error(
+                    "uri is required for mkdir",
+                    required_before_call=["uri under viking://"],
+                    next_action="Provide target viking:// URI for mkdir.",
+                    recovery_hint="Browse/stat first if unsure; viking_fs mutates OpenViking AGFS only.",
+                    error_code="missing_uri",
+                )
             payload: Dict[str, Any] = {"uri": uri}
             if args.get("description"):
                 payload["description"] = args["description"]
@@ -499,9 +568,21 @@ class OpenVikingToolMixin:
             from_uri = args.get("from_uri", "")
             to_uri = args.get("to_uri", "")
             if not from_uri:
-                return tool_error("from_uri is required for mv")
+                return _input_error(
+                    "from_uri is required for mv",
+                    required_before_call=["from_uri", "to_uri"],
+                    next_action="Provide both source and destination viking:// URIs.",
+                    recovery_hint="Use viking_browse/stat to verify the source before moving.",
+                    error_code="missing_from_uri",
+                )
             if not to_uri:
-                return tool_error("to_uri is required for mv")
+                return _input_error(
+                    "to_uri is required for mv",
+                    required_before_call=["from_uri", "to_uri"],
+                    next_action="Provide destination viking:// URI.",
+                    recovery_hint="Use viking_browse/stat to verify the destination parent before moving.",
+                    error_code="missing_to_uri",
+                )
             payload = {"from_uri": from_uri, "to_uri": to_uri}
             result = self._unwrap_result(self._client.post("/api/v1/fs/mv", payload))
             return json.dumps({
@@ -515,7 +596,13 @@ class OpenVikingToolMixin:
         if action == "rm":
             uri = args.get("uri", "")
             if not uri:
-                return tool_error("uri is required for rm")
+                return _input_error(
+                    "uri is required for rm",
+                    required_before_call=["uri under viking:// and explicit owner intent"],
+                    next_action="Provide target viking:// URI only after confirming removal is intended.",
+                    recovery_hint="Browse/stat first; do not use viking_fs rm to clean factmemory source state.",
+                    error_code="missing_uri",
+                )
             payload = {"uri": uri, "recursive": bool(args.get("recursive", False))}
             result = self._unwrap_result(self._client.delete("/api/v1/fs/rm", payload))
             return json.dumps({
@@ -526,7 +613,13 @@ class OpenVikingToolMixin:
                 "result": result,
             }, ensure_ascii=False)
 
-        return tool_error("action must be one of: mkdir, mv, rm")
+        return _input_error(
+            "action must be one of: mkdir, mv, rm",
+            required_before_call=["action in mkdir|mv|rm"],
+            next_action="Choose an explicit OpenViking AGFS maintenance action.",
+            recovery_hint="Use viking_browse for read-only inspection before mutation.",
+            error_code="invalid_action",
+        )
 
     def _tool_remember(self, args: dict) -> str:
         content = args.get("content", "")
@@ -604,9 +697,21 @@ class OpenVikingToolMixin:
         source_path: Optional[Path] = None
 
         if not uri:
-            return tool_error("uri is required")
+            return _input_error(
+                "uri is required",
+                required_before_call=["target viking:// uri", "content or content_path"],
+                next_action="Provide the OpenViking AGFS URI to write.",
+                recovery_hint="Do not use viking_write for factmemory entities or daily logs.",
+                error_code="missing_uri",
+            )
         if content and content_path:
-            return tool_error("Provide exactly one of content or content_path")
+            return _input_error(
+                "Provide exactly one of content or content_path",
+                required_before_call=["exactly one of content or content_path"],
+                next_action="Remove one content source and retry viking_write.",
+                recovery_hint="Use content_path for large text to avoid huge tool-call arguments.",
+                error_code="ambiguous_content_source",
+            )
         if content_path:
             try:
                 path = Path(str(content_path)).expanduser()
@@ -621,7 +726,13 @@ class OpenVikingToolMixin:
             except Exception as e:
                 return tool_error(f"Failed to read content_path: {e}")
         if not content:
-            return tool_error("content or content_path is required")
+            return _input_error(
+                "content or content_path is required",
+                required_before_call=["content or content_path"],
+                next_action="Provide exact content or a local UTF-8 file path.",
+                recovery_hint="Use content_path for large content; this writes OpenViking AGFS only.",
+                error_code="missing_content",
+            )
 
         # If appending, read existing content first
         existing = ""
@@ -712,7 +823,13 @@ class OpenVikingToolMixin:
         scope = args.get("scope", "viking://")
 
         if not pattern:
-            return tool_error("pattern is required")
+            return _input_error(
+                "pattern is required",
+                required_before_call=["pattern"],
+                next_action="Provide a filename pattern, or use viking_search for semantic recall.",
+                recovery_hint="Prefer viking_glob for new path matching.",
+                error_code="missing_pattern",
+            )
 
         # Use the search/glob endpoint for filename matching
         try:
