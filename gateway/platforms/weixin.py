@@ -72,9 +72,9 @@ from utils import atomic_json_write
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
-CHANNEL_VERSION = "2.4.3"
-ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 3
-DEFAULT_BOT_AGENT = "Hermes/2.4.3"
+CHANNEL_VERSION = "2.4.4"
+ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 4
+DEFAULT_BOT_AGENT = "Hermes/2.4.4"
 BOT_AGENT_MAX_BYTES = 256
 
 EP_GET_UPDATES = "ilink/bot/getupdates"
@@ -143,6 +143,8 @@ ITEM_IMAGE = 2
 ITEM_VOICE = 3
 ITEM_FILE = 4
 ITEM_VIDEO = 5
+ITEM_TOOL_CALL_START = 11
+ITEM_TOOL_CALL_RESULT = 12
 
 MSG_TYPE_USER = 1
 MSG_TYPE_BOT = 2
@@ -518,9 +520,10 @@ async def _get_updates(
     sync_buf: str,
     timeout_ms: int,
     bot_agent: Optional[str] = None,
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> Dict[str, Any]:
     try:
-        return await _api_post(
+        post_task = asyncio.create_task(_api_post(
             session,
             base_url=base_url,
             endpoint=EP_GET_UPDATES,
@@ -528,7 +531,26 @@ async def _get_updates(
             token=token,
             timeout_ms=timeout_ms,
             bot_agent=bot_agent,
-        )
+        ))
+        if cancel_event is None:
+            return await post_task
+        cancel_task = asyncio.create_task(cancel_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {post_task, cancel_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancel_task in done:
+                post_task.cancel()
+                try:
+                    await post_task
+                except asyncio.CancelledError:
+                    pass
+                return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
+            return await post_task
+        finally:
+            if not cancel_task.done():
+                cancel_task.cancel()
     except asyncio.TimeoutError:
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
 
@@ -543,6 +565,7 @@ async def _send_message(
     context_token: Optional[str],
     client_id: str,
     bot_agent: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a text message via iLink sendmessage API.
 
@@ -561,6 +584,8 @@ async def _send_message(
     }
     if context_token:
         message["context_token"] = context_token
+    if run_id:
+        message["run_id"] = run_id
     return await _api_post(
         session,
         base_url=base_url,
@@ -1306,6 +1331,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._poll_stop_event: Optional[asyncio.Event] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
@@ -1338,6 +1364,12 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("split_multiline_messages")
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
             default=False,
+        )
+        self._reply_progress_messages = _coerce_bool(
+            extra.get("reply_progress_messages")
+            or extra.get("replyProgressMessages")
+            or os.getenv("WEIXIN_REPLY_PROGRESS_MESSAGES"),
+            default=True,
         )
         # bot_agent: Client identifier for iLink API, similar to HTTP User-Agent.
         # Format: "Product/Version (Comment)", e.g. "Hermes/1.0 (OpenClaw-compatible)".
@@ -1410,6 +1442,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 )
         except Exception as exc:
             logger.warning("[%s] notify_start failed during startup (ignored): %s", self.name, exc)
+        self._poll_stop_event = asyncio.Event()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
@@ -1430,6 +1463,8 @@ class WeixinAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+        if self._poll_stop_event is not None:
+            self._poll_stop_event.set()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -1437,6 +1472,7 @@ class WeixinAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
+        self._poll_stop_event = None
         # Notify iLink that the channel is stopping (best-effort)
         if self._send_session and not self._send_session.closed and self._token:
             try:
@@ -1473,7 +1509,10 @@ class WeixinAdapter(BasePlatformAdapter):
                     sync_buf=sync_buf,
                     timeout_ms=timeout_ms,
                     bot_agent=self._bot_agent,
+                    cancel_event=self._poll_stop_event,
                 )
+                if not self._running:
+                    break
                 suggested_timeout = response.get("longpolling_timeout_ms")
                 if isinstance(suggested_timeout, int) and suggested_timeout > 0:
                     timeout_ms = suggested_timeout
@@ -1726,6 +1765,7 @@ class WeixinAdapter(BasePlatformAdapter):
         chunk: str,
         context_token: Optional[str],
         client_id: str,
+        run_id: Optional[str] = None,
     ) -> None:
         """Send a single text chunk with per-chunk retry and backoff.
 
@@ -1747,6 +1787,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     context_token=context_token,
                     client_id=client_id,
                     bot_agent=self._bot_agent,
+                    run_id=run_id,
                 )
                 # Check iLink response for session-expired error
                 if resp and isinstance(resp, dict):
@@ -1829,6 +1870,8 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token_mode = str(metadata.get("context_token_mode") or "auto").strip().lower()
         use_context_token = context_token_mode not in {"none", "off", "disabled", "tokenless"}
         context_token = self._token_store.get(self._account_id, chat_id) if use_context_token else None
+        run_id = str(metadata.get("run_id") or metadata.get("runId") or f"hermes-weixin-{uuid.uuid4().hex}")
+        delivery_metadata = {**metadata, "run_id": run_id}
         last_message_id: Optional[str] = None
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
@@ -1845,13 +1888,13 @@ class WeixinAdapter(BasePlatformAdapter):
         async def _deliver_media(path: str, is_voice: bool = False) -> None:
             ext = Path(path).suffix.lower()
             if is_voice or ext in _AUDIO_EXTS:
-                await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata)
+                await self.send_voice(chat_id=chat_id, audio_path=path, metadata=delivery_metadata)
             elif ext in _VIDEO_EXTS:
-                await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
+                await self.send_video(chat_id=chat_id, video_path=path, metadata=delivery_metadata)
             elif ext in _IMAGE_EXTS:
-                await self.send_image_file(chat_id=chat_id, image_path=path, metadata=metadata)
+                await self.send_image_file(chat_id=chat_id, image_path=path, metadata=delivery_metadata)
             else:
-                await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                await self.send_document(chat_id=chat_id, file_path=path, metadata=delivery_metadata)
 
         try:
             # Deliver extracted MEDIA: attachments first.
@@ -1877,6 +1920,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     chunk=chunk,
                     context_token=context_token,
                     client_id=client_id,
+                    run_id=run_id,
                 )
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
@@ -1887,10 +1931,121 @@ class WeixinAdapter(BasePlatformAdapter):
                 raw_response={
                     "context_token_mode": context_token_mode,
                     "context_token_used": bool(context_token),
+                    "run_id": run_id,
                 },
             )
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def _send_message_item(
+        self,
+        *,
+        chat_id: str,
+        item: Dict[str, Any],
+        context_token: Optional[str],
+        client_id: str,
+        run_id: Optional[str],
+    ) -> None:
+        msg: Dict[str, Any] = {
+            "from_user_id": "",
+            "to_user_id": chat_id,
+            "client_id": client_id,
+            "message_type": MSG_TYPE_BOT,
+            "message_state": MSG_STATE_FINISH,
+            "item_list": [item],
+        }
+        if context_token:
+            msg["context_token"] = context_token
+        if run_id:
+            msg["run_id"] = run_id
+        await _api_post(
+            self._send_session,
+            base_url=self._base_url,
+            endpoint=EP_SEND_MESSAGE,
+            payload={"msg": msg},
+            token=self._token,
+            timeout_ms=API_TIMEOUT_MS,
+            bot_agent=self._bot_agent,
+        )
+
+    def _build_tool_progress_item(
+        self,
+        *,
+        phase: str,
+        tool_name: str,
+        tool_call_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now_ms = int(time.time() * 1000)
+        normalized_name = (tool_name or "tool").strip() or "tool"
+        normalized_id = (tool_call_id or "").strip() or None
+        if phase == "start":
+            return {
+                "type": ITEM_TOOL_CALL_START,
+                "create_time_ms": now_ms,
+                "is_completed": False,
+                "tool_call_start_item": {
+                    "tool_name": normalized_name,
+                    **({"tool_call_id": normalized_id} if normalized_id else {}),
+                },
+            }
+        normalized_status = status if status in {"completed", "failed", "blocked"} else "unknown"
+        return {
+            "type": ITEM_TOOL_CALL_RESULT,
+            "create_time_ms": now_ms,
+            "is_completed": True,
+            "tool_call_result_item": {
+                "tool_name": normalized_name,
+                **({"tool_call_id": normalized_id} if normalized_id else {}),
+                "status": normalized_status,
+            },
+        }
+
+    async def send_tool_progress(
+        self,
+        chat_id: str,
+        *,
+        phase: str,
+        tool_name: str,
+        tool_call_id: Optional[str] = None,
+        status: Optional[str] = None,
+        run_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not self._reply_progress_messages:
+            return SendResult(success=True, raw_response={"skipped": "reply_progress_messages_disabled"})
+        if not self._send_session or not self._token:
+            return SendResult(success=False, error="Not connected")
+        if phase not in {"start", "end"}:
+            return SendResult(success=False, error="phase must be 'start' or 'end'")
+        metadata = metadata or {}
+        resolved_run_id = str(run_id or metadata.get("run_id") or metadata.get("runId") or f"hermes-weixin-{uuid.uuid4().hex}")
+        context_token_mode = str(metadata.get("context_token_mode") or "auto").strip().lower()
+        use_context_token = context_token_mode not in {"none", "off", "disabled", "tokenless"}
+        context_token = self._token_store.get(self._account_id, chat_id) if use_context_token else None
+        client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+        item = self._build_tool_progress_item(
+            phase=phase,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            status=status,
+        )
+        try:
+            await self._send_message_item(
+                chat_id=chat_id,
+                item=item,
+                context_token=context_token,
+                client_id=client_id,
+                run_id=resolved_run_id,
+            )
+            return SendResult(
+                success=True,
+                message_id=client_id,
+                raw_response={"run_id": resolved_run_id, "item_type": item.get("type")},
+            )
+        except Exception as exc:
+            logger.error("[%s] send_tool_progress failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -1983,11 +2138,13 @@ class WeixinAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        del file_name, reply_to, metadata, kwargs
+        del file_name, reply_to, kwargs
+        metadata = metadata or {}
+        run_id = str(metadata.get("run_id") or metadata.get("runId") or "") or None
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, file_path, caption or "")
+            message_id = await self._send_file(chat_id, file_path, caption or "", run_id=run_id)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
@@ -2001,10 +2158,12 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        metadata = metadata or {}
+        run_id = str(metadata.get("run_id") or metadata.get("runId") or "") or None
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, video_path, caption or "")
+            message_id = await self._send_file(chat_id, video_path, caption or "", run_id=run_id)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_video failed to=%s: %s", self.name, _safe_id(chat_id), exc)
@@ -2018,6 +2177,8 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        metadata = metadata or {}
+        run_id = str(metadata.get("run_id") or metadata.get("runId") or "") or None
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
 
@@ -2031,6 +2192,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 audio_path,
                 fallback_caption,
                 force_file_attachment=True,
+                run_id=run_id,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
@@ -2062,6 +2224,7 @@ class WeixinAdapter(BasePlatformAdapter):
         path: str,
         caption: str,
         force_file_attachment: bool = False,
+        run_id: Optional[str] = None,
     ) -> str:
         assert self._send_session is not None and self._token is not None
         plaintext = Path(path).read_bytes()
@@ -2133,6 +2296,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 context_token=context_token,
                 client_id=last_message_id,
                 bot_agent=self._bot_agent,
+                run_id=run_id,
             )
 
         last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
@@ -2149,6 +2313,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     "message_state": MSG_STATE_FINISH,
                     "item_list": [media_item],
                     **({"context_token": context_token} if context_token else {}),
+                    **({"run_id": run_id} if run_id else {}),
                 }
             },
             token=self._token,
