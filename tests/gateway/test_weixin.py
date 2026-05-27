@@ -185,18 +185,18 @@ class TestWeixinChunking:
 
 class TestWeixinConfig:
     def test_weixin_protocol_version_matches_upstream_npm_package(self):
-        assert weixin.CHANNEL_VERSION == "2.4.3"
-        assert weixin.ILINK_APP_CLIENT_VERSION == ((2 << 16) | (4 << 8) | 3)
+        assert weixin.CHANNEL_VERSION == "2.4.4"
+        assert weixin.ILINK_APP_CLIENT_VERSION == ((2 << 16) | (4 << 8) | 4)
 
     def test_base_info_uses_valid_bot_agent_default(self):
         assert weixin._base_info() == {
-            "channel_version": "2.4.3",
-            "bot_agent": "Hermes/2.4.3",
+            "channel_version": "2.4.4",
+            "bot_agent": "Hermes/2.4.4",
         }
 
     def test_base_info_sanitizes_invalid_bot_agent(self):
-        assert weixin._base_info("Hermes")["bot_agent"] == "Hermes/2.4.3"
-        assert weixin._base_info("Hermes/2.4.3 (env=prod)")["bot_agent"] == "Hermes/2.4.3 (env=prod)"
+        assert weixin._base_info("Hermes")["bot_agent"] == "Hermes/2.4.4"
+        assert weixin._base_info("Hermes/2.4.4 (env=prod)")["bot_agent"] == "Hermes/2.4.4 (env=prod)"
 
     def test_apply_env_overrides_configures_weixin(self):
         config = GatewayConfig()
@@ -445,6 +445,24 @@ class TestWeixinChunkDelivery:
         assert result.raw_response["context_token_used"] is False
         assert send_message_mock.await_args.kwargs["context_token"] is None
 
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_attaches_same_run_id_to_chunks(self, send_message_mock):
+        adapter = self._connected_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 12
+
+        result = asyncio.run(
+            adapter.send(
+                "wxid_test123",
+                "first\n\nsecond",
+                metadata={"run_id": "run-123"},
+            )
+        )
+
+        assert result.success is True
+        assert result.raw_response["run_id"] == "run-123"
+        assert send_message_mock.await_count == 2
+        assert all(call.kwargs["run_id"] == "run-123" for call in send_message_mock.await_args_list)
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):
@@ -490,7 +508,7 @@ class TestWeixinOutboundMedia:
 
         assert result.success is True
         assert result.message_id == "msg-2"
-        adapter._send_file.assert_awaited_once_with("wxid_test123", "/tmp/report.pdf", "报告请看")
+        adapter._send_file.assert_awaited_once_with("wxid_test123", "/tmp/report.pdf", "报告请看", run_id=None)
 
     def test_send_file_uses_post_for_upload_full_url_and_hex_encoded_aes_key(self, tmp_path):
         class _UploadResponse:
@@ -555,6 +573,71 @@ class TestWeixinOutboundMedia:
         media = payload["msg"]["item_list"][0]["image_item"]["media"]
         assert media["encrypt_query_param"] == "enc-param"
         assert media["aes_key"] == expected_aes_key
+
+
+class TestWeixinReplyProgress:
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
+    def test_send_tool_progress_start_item(self, api_post_mock):
+        adapter = self._connected_adapter()
+
+        result = asyncio.run(
+            adapter.send_tool_progress(
+                "wxid_test123",
+                phase="start",
+                tool_name="viking_search",
+                tool_call_id="call-1",
+                run_id="run-123",
+            )
+        )
+
+        assert result.success is True
+        assert result.raw_response["run_id"] == "run-123"
+        payload = api_post_mock.await_args.kwargs["payload"]
+        msg = payload["msg"]
+        assert msg["run_id"] == "run-123"
+        assert msg["context_token"] == "ctx-token"
+        item = msg["item_list"][0]
+        assert item["type"] == weixin.ITEM_TOOL_CALL_START
+        assert item["is_completed"] is False
+        assert item["tool_call_start_item"] == {
+            "tool_name": "viking_search",
+            "tool_call_id": "call-1",
+        }
+
+    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
+    def test_send_tool_progress_result_item(self, api_post_mock):
+        adapter = self._connected_adapter()
+
+        result = asyncio.run(
+            adapter.send_tool_progress(
+                "wxid_test123",
+                phase="end",
+                tool_name="viking_search",
+                tool_call_id="call-1",
+                status="completed",
+                run_id="run-123",
+            )
+        )
+
+        assert result.success is True
+        payload = api_post_mock.await_args.kwargs["payload"]
+        item = payload["msg"]["item_list"][0]
+        assert item["type"] == weixin.ITEM_TOOL_CALL_RESULT
+        assert item["is_completed"] is True
+        assert item["tool_call_result_item"] == {
+            "tool_name": "viking_search",
+            "tool_call_id": "call-1",
+            "status": "completed",
+        }
 
 
 class TestWeixinRemoteMediaSafety:
@@ -646,6 +729,25 @@ class TestWeixinBlankMessagePrevention:
                     client_id="cid",
                 )
             )
+
+    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
+    def test_send_message_attaches_run_id(self, api_post_mock):
+        asyncio.run(
+            weixin._send_message(
+                AsyncMock(),
+                base_url="https://example.com",
+                token="tok",
+                to="wxid_test",
+                text="hello",
+                context_token="ctx",
+                client_id="cid",
+                run_id="run-123",
+            )
+        )
+
+        payload = api_post_mock.await_args.kwargs["payload"]
+        assert payload["msg"]["run_id"] == "run-123"
+        assert payload["msg"]["context_token"] == "ctx"
 
 
 class TestWeixinStreamingCursorSuppression:
@@ -801,6 +903,7 @@ class TestWeixinVoiceSending:
             str(source),
             "[语音消息，以附件形式发送]",
             force_file_attachment=True,
+            run_id=None,
         )
 
     def test_voice_builder_for_silk_files_can_be_forced_to_file_attachment(self):
