@@ -975,7 +975,7 @@ class AIAgent:
         message gives the user no path forward.
 
         This helper substitutes an actionable hint into the stale-timeout
-        warning when the request matches a known silent-reject pattern.
+        warning when the request matches a known no-first-byte pattern.
         Currently flagged: ``gpt-5.5`` family on the Codex backend.  See
         hermes-agent #21444 for the symptom history.  The upstream backend
         behavior has historically come and gone with ChatGPT entitlement
@@ -983,8 +983,8 @@ class AIAgent:
         the symptom is dormant.
 
         Does NOT fix the backend issue.  Only converts an opaque stale-timeout
-        into actionable text so users learn the workaround in seconds rather
-        than digging through logs.
+        into actionable text. Keep the wording model-pinned: Hermes should
+        retry the same requested model instead of nudging users to downgrade.
         """
         if self.api_mode != "codex_responses":
             return None
@@ -1006,12 +1006,11 @@ class AIAgent:
         if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
             return None
         return (
-            f"Codex backend appears to be silently rejecting {eff_model!r} "
+            f"Codex backend produced no first byte for {eff_model!r} "
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
-            "This is a known backend-side pattern that has affected ChatGPT "
-            "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4-codex` on the same OAuth profile, "
-            "or switch to a different model/provider in your fallback chain. "
+            "This is an intermittent backend/network pattern; Hermes will "
+            "retry the same model on a fresh connection. If it repeats across "
+            "all retries, check the proxy/OAuth path or retry the turn later. "
             "See hermes-agent#21444 for symptom history."
         )
 

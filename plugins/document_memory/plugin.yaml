@@ -1,0 +1,12 @@
+name: document_memory
+version: 0.1.0
+description: "Lightweight document memory layer: register files, index them through OpenViking, search/read document resources, and prepare factmemory evidence packets without treating RAG recall as confirmed facts."
+author: Hermes Agent
+kind: backend
+provides_tools:
+  - document_import
+  - document_search
+  - document_read
+  - document_list
+  - document_link_entity
+  - document_promote_to_fact
