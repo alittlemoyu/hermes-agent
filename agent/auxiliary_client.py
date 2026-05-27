@@ -863,6 +863,54 @@ class _CodexCompletionsAdapter:
                     total_tokens=getattr(resp_usage, "total_tokens", 0)
                         or (resp_usage.get("total_tokens", 0) if isinstance(resp_usage, dict) else 0),
                 )
+        except TypeError as exc:
+            if "'NoneType' object is not iterable" not in str(exc):
+                raise
+            if not collected_output_items and not (collected_text_deltas and not has_function_calls):
+                logger.debug(
+                    "Codex auxiliary hit SDK response.completed output=None parser "
+                    "error with no recoverable prior stream events"
+                )
+                raise
+            logger.warning(
+                "Codex auxiliary recovered from SDK response.completed output=None "
+                "parser error using prior stream events (items=%d, text_chars=%d)",
+                len(collected_output_items),
+                sum(len(p) for p in collected_text_deltas),
+            )
+            recovered_output = list(collected_output_items)
+            if not recovered_output and collected_text_deltas and not has_function_calls:
+                recovered_output = [SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(
+                        type="output_text",
+                        text="".join(collected_text_deltas),
+                    )],
+                )]
+            final = SimpleNamespace(output=recovered_output, usage=None)
+
+            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+                val = getattr(obj, key, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(key, default)
+                return val if val is not None else default
+
+            for item in getattr(final, "output", []):
+                item_type = _item_get(item, "type")
+                if item_type == "message":
+                    for part in (_item_get(item, "content") or []):
+                        ptype = _item_get(part, "type")
+                        if ptype in {"output_text", "text"}:
+                            text_parts.append(_item_get(part, "text", ""))
+                elif item_type == "function_call":
+                    tool_calls_raw.append(SimpleNamespace(
+                        id=_item_get(item, "call_id", ""),
+                        type="function",
+                        function=SimpleNamespace(
+                            name=_item_get(item, "name", ""),
+                            arguments=_item_get(item, "arguments", "{}"),
+                        ),
+                    ))
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc

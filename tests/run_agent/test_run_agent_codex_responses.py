@@ -10,6 +10,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.codex_runtime import _patch_codex_completed_output_none
 
 
 @pytest.fixture(autouse=True)
@@ -672,6 +673,51 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.status == "completed"
     assert response.output == [output_item]
     assert response.usage.total_tokens == 11
+
+
+def test_run_codex_stream_recovers_text_delta_when_completed_output_is_none(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.output_text.delta", delta="hello"),
+                    SimpleNamespace(type="response.output_text.delta", delta=" world"),
+                ],
+                iter_error=TypeError("'NoneType' object is not iterable"),
+            ),
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "hello world"
+
+
+def test_codex_completed_output_none_patch_preserves_usage():
+    class FakeState:
+        def __init__(self):
+            self.seen_response = None
+
+        def handle_event(self, event):
+            self.seen_response = event.response
+            return [event]
+
+    state = FakeState()
+    stream = SimpleNamespace(_state=state)
+    response = SimpleNamespace(
+        output=None,
+        usage=SimpleNamespace(input_tokens=123, output_tokens=45, total_tokens=168),
+    )
+    event = SimpleNamespace(type="response.completed", response=response)
+
+    _patch_codex_completed_output_none(stream)
+    yielded = state.handle_event(event)
+
+    assert yielded == [event]
+    assert state.seen_response.output == []
+    assert state.seen_response.usage.total_tokens == 168
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
