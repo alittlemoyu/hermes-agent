@@ -121,6 +121,36 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class WeixinProgressCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.WEIXIN):
+        super().__init__(platform=platform)
+        self.tool_progress = []
+
+    async def send_tool_progress(
+        self,
+        chat_id,
+        *,
+        phase,
+        tool_name,
+        tool_call_id=None,
+        status=None,
+        run_id=None,
+        metadata=None,
+    ) -> SendResult:
+        self.tool_progress.append(
+            {
+                "chat_id": chat_id,
+                "phase": phase,
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "status": status,
+                "run_id": run_id,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=f"{phase}-{tool_name}")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -137,6 +167,24 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class CompleteProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "viking_search", "hermes weixin", {"query": "hermes weixin"})
+            time.sleep(0.05)
+            cb("tool.completed", "viking_search", None, None, duration=0.05, is_error=False, result="ok")
         return {
             "final_response": "done",
             "messages": [],
@@ -734,6 +782,42 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_sends_weixin_structured_tool_progress(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CompleteProgressAgent,
+        session_id="sess-weixin-progress",
+        config_data={
+            "display": {
+                "tool_progress": "all",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.WEIXIN,
+        chat_id="wxid_test123",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=WeixinProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    for _ in range(20):
+        if len(adapter.tool_progress) >= 2:
+            break
+        await asyncio.sleep(0.01)
+    assert [item["phase"] for item in adapter.tool_progress] == ["start", "end"]
+    start_item, end_item = adapter.tool_progress
+    assert start_item["tool_name"] == "viking_search"
+    assert end_item["tool_name"] == "viking_search"
+    assert end_item["status"] == "completed"
+    assert start_item["tool_call_id"] == end_item["tool_call_id"]
+    assert start_item["run_id"].startswith("hermes-weixin-")
+    assert end_item["run_id"] == start_item["run_id"]
+    assert start_item["metadata"] == {"run_id": start_item["run_id"]}
 
 
 @pytest.mark.asyncio
