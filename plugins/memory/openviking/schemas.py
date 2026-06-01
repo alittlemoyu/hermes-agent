@@ -33,8 +33,10 @@ SEARCH_SCHEMA = {
                 "description": "Find-mode search depth (default: auto).",
             },
             "scope": {
-                "type": "string",
-                "description": "Viking URI prefix to scope search (e.g. 'viking://resources/docs/').",
+                "oneOf": [
+                    {"type": "string", "description": "Single viking:// URI prefix to scope search (e.g. 'viking://resources/docs/')."},
+                    {"type": "array", "items": {"type": "string"}, "description": "Multiple viking:// URIs for cross-scope retrieval."},
+                ],
             },
             "limit": {"type": "integer", "description": "Max results (default: 10)."},
             "score_threshold": {
@@ -102,6 +104,10 @@ READ_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": "Maximum bytes/characters for full content reads.",
+            },
+            "raw": {
+                "type": "boolean",
+                "description": "If true, return raw storage content without hiding memory internal fields. Default false.",
             },
         },
         "required": ["uri"],
@@ -593,7 +599,7 @@ ADD_RESOURCE_SCHEMA = {
             },
             "watch_interval": {
                 "type": "number",
-                "description": "Polling interval in seconds for watched resource processing.",
+                "description": "Watch interval in minutes for automatic resource re-processing. Positive = create/update watch; 0 or negative = cancel existing watch.",
             },
         },
         "required": ["url"],
@@ -638,6 +644,34 @@ ARCHIVE_SCHEMA = {
             "level_limit": {
                 "type": "integer",
                 "description": "Optional grep level limit.",
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+WATCH_SCHEMA = {
+    "name": "viking_watch",
+    "description": (
+        "Manage OpenViking resource watch tasks. "
+        "Use list to see active watches; get to inspect a specific watch; "
+        "cancel to stop auto-refresh; trigger to force immediate re-processing."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["list", "get", "cancel", "trigger"],
+                "description": "Watch management action.",
+            },
+            "to_uri": {
+                "type": "string",
+                "description": "Target viking:// URI of the watch task (used for cancel/trigger/get).",
+            },
+            "task_id": {
+                "type": "string",
+                "description": "Watch task ID (alternative to to_uri for get).",
             },
         },
         "required": ["action"],
@@ -817,6 +851,15 @@ _LOCAL_TOOL_CONTRACTS = {
         "write_policy": "openviking_index_maintenance_write",
         "recovery_hint": "Start with vectors_only; use semantic_and_vectors when summaries are stale.",
     },
+    "viking_watch": {
+        "when_to_use": ["List, inspect, cancel, or trigger OpenViking resource watch tasks."],
+        "when_not_to_use": ["Do not use for ordinary memory recall or resource ingestion."],
+        "required_before_call": ["action"],
+        "next_action": "After cancel, verify with list; after trigger, poll with get to confirm execution.",
+        "dangerous_misroutes": ["Canceling watches without confirming they belong to the intended resource."],
+        "write_policy": "openviking_watch_management",
+        "recovery_hint": "Use to_uri (viking://resources/...) when task_id is unknown; list first if unsure.",
+    },
 }
 
 
@@ -829,6 +872,7 @@ def get_openviking_tool_schemas() -> List[Dict[str, Any]]:
             FIND_SCHEMA, GREP_SCHEMA, GLOB_SCHEMA, ADD_RESOURCE_SCHEMA,
             ARCHIVE_SCHEMA, ADD_SKILL_SCHEMA, SYNC_SKILLS_SCHEMA,
             SYSTEM_SCHEMA, ADMIN_SCHEMA, CONSISTENCY_SCHEMA, REINDEX_SCHEMA,
+            WATCH_SCHEMA,
         )
     }
     for schema in schemas_by_name.values():

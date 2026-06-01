@@ -646,6 +646,8 @@ def test_sync_turn_captures_message_parts_and_skips_system_policy(monkeypatch):
             pass
 
         def post(self, path, payload=None, **kwargs):
+            if path.endswith("/messages/batch"):
+                raise RuntimeError("Not Found")
             self.calls.append((path, payload or {}))
             return {"result": {}}
 
@@ -726,6 +728,8 @@ def test_sync_turn_strips_relevant_memories_and_commits_above_threshold(monkeypa
             pass
 
         def post(self, path, payload=None, **kwargs):
+            if path.endswith("/messages/batch"):
+                raise RuntimeError("Not Found")
             self.calls.append(("post", path, payload or {}))
             return {"result": {"task_id": "task-1", "archived": True}}
 

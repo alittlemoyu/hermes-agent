@@ -183,3 +183,8 @@ marked with `background_review` provenance.
 This plugin focuses on the OpenViking context lifecycle: session context,
 recall, capture, archive search, and commit policy. Durable Store/KV state is a
 separate integration layer and is intentionally not exposed here.
+
+## Known Limitations
+
+- **Code Navigation Tools (v0.3.18+)**: `code_outline`, `code_search`, and `code_expand` are only available through the OpenViking MCP endpoint (`/mcp`), not the REST API. Hermes connects via REST, so these tools cannot be exposed. Use `viking_grep` + `viking_read` for code exploration instead.
+- **Batch Messages (v0.3.20+)**: `sync_turn` automatically uses `POST /messages/batch` when the server supports it, falling back to single-message POSTs on older servers or when batch fails.

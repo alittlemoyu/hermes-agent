@@ -30,6 +30,7 @@ DEFAULT_TOOL_NAMES: Tuple[str, ...] = (
     "viking_admin",
     "viking_consistency",
     "viking_reindex",
+    "viking_watch",
 )
 
 COMPAT_TOOL_NAMES: Tuple[str, ...] = (
@@ -40,7 +41,7 @@ TOOL_LAYERS = {
     "retrieval": ("viking_search", "viking_read", "viking_browse", "viking_archive"),
     "agfs": ("viking_glob", "viking_grep", "viking_fs", "viking_write"),
     "memory": ("viking_remember", "viking_link", "viking_relations"),
-    "resources": ("viking_add_resource", "viking_add_skill", "viking_sync_skills"),
+    "resources": ("viking_add_resource", "viking_add_skill", "viking_sync_skills", "viking_watch"),
     "maintenance": ("viking_system", "viking_admin", "viking_consistency", "viking_reindex"),
     "compat": COMPAT_TOOL_NAMES,
 }

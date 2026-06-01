@@ -706,9 +706,26 @@ class OpenVikingLifecycleMixin:
         sid_part = _url_path_part(session_id)
         payloads = [payload for payload in record.get("payloads") or [] if isinstance(payload, dict)]
         posted = 0
-        for payload in payloads:
-            client.post(f"/api/v1/sessions/{sid_part}/messages", payload)
-            posted += 1
+
+        # Batch path: use /messages/batch for multiple payloads (v0.3.20+)
+        if len(payloads) > 1:
+            try:
+                for i in range(0, len(payloads), 100):
+                    batch = payloads[i:i + 100]
+                    client.post(
+                        f"/api/v1/sessions/{sid_part}/messages/batch",
+                        {"messages": batch},
+                    )
+                    posted += len(batch)
+            except Exception:
+                posted = 0  # fallback to single path below
+
+        # Single path (fallback or single payload)
+        if posted == 0:
+            for payload in payloads:
+                client.post(f"/api/v1/sessions/{sid_part}/messages", payload)
+                posted += 1
+
         context_uris = [
             part["uri"]
             for payload in payloads

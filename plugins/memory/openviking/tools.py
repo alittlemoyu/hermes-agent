@@ -103,6 +103,8 @@ class OpenVikingToolMixin:
                 return self._attach_tool_contract(tool_name, self._tool_consistency(args))
             elif tool_name == "viking_reindex":
                 return self._attach_tool_contract(tool_name, self._tool_reindex(args))
+            elif tool_name == "viking_watch":
+                return self._attach_tool_contract(tool_name, self._tool_watch(args))
             return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
             return self._attach_tool_contract(tool_name, tool_error(str(e)))
@@ -465,6 +467,8 @@ class OpenVikingToolMixin:
                 for key in ("offset", "limit"):
                     if key in args and args[key] is not None:
                         params[key] = args[key]
+            if args.get("raw") is not None:
+                params["raw"] = bool(args["raw"])
             resp = self._client.get(endpoint, params=params)
         except Exception:
             # OpenViking may return HTTP 500 for abstract/overview reads on normal
@@ -1625,6 +1629,120 @@ class OpenVikingToolMixin:
             }, ensure_ascii=False)
         except Exception as e:
             return tool_error(f"Reindex failed: {e}")
+
+    def _tool_watch(self, args: dict) -> str:
+        action = args.get("action", "")
+        if action == "list":
+            try:
+                resp = self._client.get("/api/v1/watches")
+                result = self._unwrap_result(resp)
+                if isinstance(result, dict) and "tasks" in result:
+                    tasks = result["tasks"]
+                elif isinstance(result, list):
+                    tasks = result
+                else:
+                    tasks = []
+                return json.dumps({
+                    "status": "ok",
+                    "action": action,
+                    "tasks": [
+                        {
+                            "task_id": t.get("task_id", ""),
+                            "to_uri": t.get("to_uri", ""),
+                            "watch_interval": t.get("watch_interval", 0),
+                            "is_active": t.get("is_active", False),
+                            "last_execution_time": t.get("last_execution_time", ""),
+                        }
+                        for t in tasks if isinstance(t, dict)
+                    ],
+                    "count": len(tasks),
+                }, ensure_ascii=False)
+            except Exception as e:
+                return tool_error(f"Watch list failed: {e}")
+
+        if action == "get":
+            task_id = args.get("task_id", "")
+            to_uri = args.get("to_uri", "")
+            if not task_id and not to_uri:
+                return _input_error(
+                    "task_id or to_uri is required for get",
+                    required_before_call=["task_id or to_uri"],
+                    next_action="Provide the watch task_id or the resource to_uri.",
+                    recovery_hint="Use list first if you are unsure of the task_id.",
+                )
+            try:
+                if task_id:
+                    resp = self._client.get(f"/api/v1/watches/{_url_path_part(task_id)}")
+                else:
+                    resp = self._client.get("/api/v1/watches", params={"to_uri": to_uri})
+                result = self._unwrap_result(resp)
+                return json.dumps({
+                    "status": "ok",
+                    "action": action,
+                    "task": result if isinstance(result, dict) else {},
+                }, ensure_ascii=False)
+            except Exception as e:
+                return tool_error(f"Watch get failed: {e}")
+
+        if action == "cancel":
+            to_uri = args.get("to_uri", "")
+            task_id = args.get("task_id", "")
+            if not to_uri and not task_id:
+                return _input_error(
+                    "task_id or to_uri is required for cancel",
+                    required_before_call=["task_id or to_uri"],
+                    next_action="Provide the resource to_uri or task_id to cancel.",
+                    recovery_hint="Use list to find the to_uri or task_id of the watch to cancel.",
+                )
+            try:
+                if task_id:
+                    resp = self._client.delete(f"/api/v1/watches/{_url_path_part(task_id)}")
+                else:
+                    resp = self._client.delete("/api/v1/watches", params={"to_uri": to_uri})
+                result = self._unwrap_result(resp)
+                return json.dumps({
+                    "status": "cancelled",
+                    "action": action,
+                    "task_id": result.get("task_id") if isinstance(result, dict) else task_id,
+                    "to_uri": result.get("to_uri") if isinstance(result, dict) else to_uri,
+                    "message": "Watch task cancelled.",
+                }, ensure_ascii=False)
+            except Exception as e:
+                return tool_error(f"Watch cancel failed: {e}")
+
+        if action == "trigger":
+            to_uri = args.get("to_uri", "")
+            task_id = args.get("task_id", "")
+            if not to_uri and not task_id:
+                return _input_error(
+                    "task_id or to_uri is required for trigger",
+                    required_before_call=["task_id or to_uri"],
+                    next_action="Provide the resource to_uri or task_id to trigger.",
+                    recovery_hint="Use list to find the to_uri or task_id of the watch to trigger.",
+                )
+            try:
+                if task_id:
+                    resp = self._client.post(f"/api/v1/watches/{_url_path_part(task_id)}/trigger")
+                else:
+                    resp = self._client.post("/api/v1/watches/trigger", params={"to_uri": to_uri})
+                result = self._unwrap_result(resp)
+                return json.dumps({
+                    "status": "triggered",
+                    "action": action,
+                    "task_id": result.get("task_id") if isinstance(result, dict) else task_id,
+                    "to_uri": result.get("to_uri") if isinstance(result, dict) else to_uri,
+                    "scheduled": result.get("scheduled", True) if isinstance(result, dict) else True,
+                    "message": "Watch task triggered for immediate execution.",
+                }, ensure_ascii=False)
+            except Exception as e:
+                return tool_error(f"Watch trigger failed: {e}")
+
+        return _input_error(
+            "action must be one of: list, get, cancel, trigger",
+            required_before_call=["action in list|get|cancel|trigger"],
+            next_action="Choose an explicit watch management action.",
+            recovery_hint="Use list first to see active watches, then cancel or trigger by to_uri.",
+        )
 
 
 # ---------------------------------------------------------------------------
